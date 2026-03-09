@@ -12,6 +12,7 @@ Features:
 """
 
 import asyncio
+import base64
 import os
 import tempfile
 import subprocess
@@ -47,7 +48,7 @@ import multiprocessing as mp
 RDLogger.DisableLog('rdApp.*')
 
 # Configure logging — console + rotating file
-_LOG_FILE = os.path.join(os.path.dirname(__file__), 'gnina_app.log')
+_LOG_FILE = os.path.join(os.path.dirname(__file__), 'gnina_webapp.log')
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -668,6 +669,11 @@ GNINA_PATH = os.environ.get('GNINA_PATH', '/opt/gnina/gnina.1.3.2')
 
 # PyMOL binary for headless session generation (pymol -cq script.py)
 PYMOL_PATH = os.environ.get('PYMOL_PATH', '/home/evehom/Programs/miniconda3/envs/pymol/bin/pymol')
+
+# Protein preparation (protprep.py) — runs in openmmdl conda env
+OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON', '/home/evehom/Programs/miniconda3/envs/openmmdl/bin/python')
+PROTPREP_SCRIPT = os.environ.get('PROTPREP_SCRIPT', '/home/evehom/Data/Scripts/SBDD/protprep.py')
+SBDD_PYTHON = os.environ.get('SBDD_PYTHON', '/home/evehom/Programs/miniconda3/envs/sbdd/bin/python')
 
 # ============================================================================
 # DATA CLASSES
@@ -1407,9 +1413,9 @@ ligand_objs = [{ligand_obj_list}]
 for obj in ligand_objs:
     cmd.hide('sticks', obj + ' and hydro and (neighbor (elem C))')
 
-# --- Binding-site residues within 5 Å of any docked pose: polar H shown ---
+# --- Binding-site residues within 4 Å of any docked pose: polar H shown ---
 all_ligands_sel = ' or '.join(ligand_objs) if ligand_objs else 'none'
-cmd.select('binding_site', f'protein and byres (protein within 5 of ({{all_ligands_sel}}))')
+cmd.select('binding_site', f'protein and byres (protein within 4 of ({{all_ligands_sel}}))')
 cmd.show('lines', 'binding_site')
 cmd.hide('lines', 'binding_site and hydro and (neighbor (elem C))')
 
@@ -1422,6 +1428,7 @@ cmd.set('transparency', 0.5, 'protein')
 cmd.deselect()
 cmd.orient(all_ligands_sel if ligand_objs else 'protein')
 cmd.zoom('binding_site', 5)
+cmd.delete('binding_site')
 cmd.save(r'{pse_path}')
 cmd.quit()
 """
@@ -1631,27 +1638,28 @@ cmd.quit()
         raw_blocks = [b for b in fixed_content.split('$$$$') if b.strip()]
         logger.info(f"sort_and_filter_results: {len(raw_blocks)} raw blocks after merging")
 
-        # Use RDKit SDMolSupplier for robust parsing of all SDF variants
-        # (V2000, V3000, Marvin-style 2D, missing headers, etc.)
-        suppl = Chem.SDMolSupplier(fixed_path, removeHs=False, sanitize=False)
-        logger.info(f"sort_and_filter_results: SDMolSupplier sees {len(suppl)} entries")
+        # Parse each raw block directly with MolFromMolBlock to guarantee we process
+        # exactly as many molecules as there are raw_blocks — SDMolSupplier.__len__() can
+        # miscount when GNINA output has M  CHG records or atypical V2000 formatting.
+        logger.info(f"sort_and_filter_results: parsing {len(raw_blocks)} raw blocks")
         poses = []
         skipped_none = 0
         skipped_zero_atom = 0
-        for i, mol in enumerate(suppl):
+        for i, raw_block in enumerate(raw_blocks):
+            mol = Chem.MolFromMolBlock(raw_block.strip(), removeHs=False, sanitize=False)
             if mol is None:
                 skipped_none += 1
-                raw_name = raw_blocks[i].strip().split('\n')[0] if i < len(raw_blocks) else '?'
-                logger.warning(f"sort_and_filter_results: mol[{i}] ('{raw_name}') returned None from SDMolSupplier — skipped")
+                raw_name = raw_block.strip().split('\n')[0]
+                logger.warning(f"sort_and_filter_results: mol[{i}] ('{raw_name}') returned None — skipped")
                 continue
             if mol.GetNumAtoms() == 0:
                 skipped_zero_atom += 1
-                raw_name = raw_blocks[i].strip().split('\n')[0] if i < len(raw_blocks) else '?'
+                raw_name = raw_block.strip().split('\n')[0]
                 logger.warning(f"sort_and_filter_results: mol[{i}] ('{raw_name}') has 0 atoms — skipped")
                 continue
 
             mol_name = _extract_mol_name(mol, f"mol_{i}")
-            raw_block = raw_blocks[i] if i < len(raw_blocks) else None
+            raw_block = raw_block  # already have it
 
             # Log property names for the first molecule to help diagnose RDKit/GNINA spacing issues
             if i == 0:
@@ -2016,6 +2024,75 @@ cmd.quit()
                     annotated, len(blocks), sdf_path)
         return annotated
 
+    async def add_plif_sim(self, sdf_path: str, receptor_path: str, reference_path: str) -> int:
+        """
+        Annotates each pose in sdf_path with PLIF_Sim — ODDT InteractionFingerprint
+        Tanimoto similarity to the reference ligand. Runs via sbdd conda env.
+        Modifies sdf_path in-place. Returns number of poses successfully annotated.
+        """
+        work_dir = Path(sdf_path).parent
+        script_path = work_dir / "_plif_sim.py"
+        out_json = work_dir / "_plif_sim.json"
+
+        script_path.write_text(
+            f"import sys, json\n"
+            f"import oddt\n"
+            f"from oddt.fingerprints import InteractionFingerprint, tanimoto\n"
+            f"from pathlib import Path\n"
+            f"\n"
+            f"protein = next(oddt.toolkit.readfile('pdb', {repr(receptor_path)}))\n"
+            f"protein.protein = True\n"
+            f"reference = next(oddt.toolkit.readfile('sdf', {repr(reference_path)}))\n"
+            f"poses = list(oddt.toolkit.readfile('sdf', {repr(sdf_path)}))\n"
+            f"\n"
+            f"ref_fp = InteractionFingerprint(reference, protein, strict=True)\n"
+            f"results = []\n"
+            f"for mol in poses:\n"
+            f"    fp = InteractionFingerprint(mol, protein, strict=True)\n"
+            f"    if fp is not None and len(fp) > 0:\n"
+            f"        results.append(float(tanimoto(ref_fp, fp)))\n"
+            f"    else:\n"
+            f"        results.append(None)\n"
+            f"\n"
+            f"Path({repr(str(out_json))}).write_text(json.dumps(results))\n"
+        )
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                SBDD_PYTHON, str(script_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode != 0 or not out_json.exists():
+                logger.error("add_plif_sim: subprocess failed: %s", stderr.decode()[:500])
+                return 0
+        except asyncio.TimeoutError:
+            logger.error("add_plif_sim: timed out")
+            return 0
+
+        similarities = json.loads(out_json.read_text())
+
+        with open(sdf_path, 'r') as f:
+            content = f.read()
+        blocks = [b for b in content.split('$$$$') if b.strip()]
+
+        annotated = 0
+        new_blocks = []
+        for i, block in enumerate(blocks):
+            sim = similarities[i] if i < len(similarities) else None
+            sim_str = f'{sim:.4f}' if sim is not None else 'N/A'
+            if sim is not None:
+                annotated += 1
+            new_blocks.append(block.strip() + f'\n\n> <PLIF_Sim>\n{sim_str}\n')
+
+        with open(sdf_path, 'w') as f:
+            for b in new_blocks:
+                f.write(b.rstrip('\r\n ') + '\n\n$$$$\n')
+
+        logger.info("add_plif_sim: annotated %d/%d poses in %s", annotated, len(blocks), sdf_path)
+        return annotated
+
 
 # ============================================================================
 # PYMOL SCRIPT GENERATION
@@ -2073,9 +2150,9 @@ def generate_pymol_script(
 
     lines += [
         "",
-        "# --- Binding site: residues within 5 Å of any docking pose ---",
+        "# --- Binding site: residues within 4 Å of any docking pose ---",
         f"select pose_atoms, ({all_poses_sel})",
-        "select binding_residues, byres (protein within 5 of pose_atoms)",
+        "select binding_residues, byres (protein within 4 of pose_atoms)",
         "",
         "# Lines with element colors (white carbons, CPK for N/O/S/etc.)",
         "show lines, binding_residues",
@@ -2159,9 +2236,9 @@ def generate_pymol_session(
 
     script_lines += [
         "",
-        "# Binding site residues within 5 Angstrom of any pose",
+        "# Binding site residues within 4 Angstrom of any pose",
         f"cmd.select('pose_atoms', '({all_poses_sel})')",
-        "cmd.select('binding_residues', 'byres (protein within 5 of pose_atoms)')",
+        "cmd.select('binding_residues', 'byres (protein within 4 of pose_atoms)')",
         "cmd.show('lines', 'binding_residues')",
         "util.cbaw('binding_residues')",
         "",
@@ -2301,6 +2378,7 @@ async def dock_molecules(
     shape_sim: bool = Form(False),
     ref_sim: bool = Form(False),
     posebusters: bool = Form(False),
+    plif_sim: bool = Form(False),
     session_name: str = Form(''),
 ):
     """
@@ -2562,6 +2640,17 @@ async def dock_molecules(
             )
             job_processor.add_posebusters_flags(str(final_path))
 
+        if plif_sim:
+            await job_processor.update_progress(
+                job_id, progress=95, message="Calculating PLIF similarity...",
+                current_stage="PLIF Sim"
+            )
+            await job_processor.add_plif_sim(
+                sdf_path=str(final_path),
+                receptor_path=str(receptor_path),
+                reference_path=str(reference_path),
+            )
+
         # Optional PyMOL session
         pse_path = None
         if generate_pymol:
@@ -2597,17 +2686,21 @@ async def dock_molecules(
             with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(str(final_path), f"{stem}.sdf")
                 zf.write(pse_path, f"{stem}.pse")
-            return FileResponse(
+            resp = FileResponse(
                 path=str(zip_path),
                 filename=f"{stem}.zip",
                 media_type="application/zip",
             )
+            resp.headers["X-Job-Id"] = job_id
+            return resp
 
-        return FileResponse(
+        resp = FileResponse(
             path=str(final_path),
             filename=f"{stem}.sdf",
             media_type="application/octet-stream",
         )
+        resp.headers["X-Job-Id"] = job_id
+        return resp
     
     except HTTPException:
         raise
@@ -2618,14 +2711,13 @@ async def dock_molecules(
         raise HTTPException(500, f"Docking failed: {str(e)}")
     
     finally:
-        # Schedule cleanup (keep files for a bit for debugging)
         async def cleanup():
-            await asyncio.sleep(300)  # Keep for 5 minutes
+            await asyncio.sleep(3600)  # Keep for 1 hour
             if work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
             if job_id in active_jobs:
                 del active_jobs[job_id]
-        
+
         asyncio.create_task(cleanup())
 
 
@@ -2669,6 +2761,25 @@ async def websocket_progress(websocket: WebSocket, job_id: str):
             job_websockets[job_id].remove(websocket)
 
 
+@app.get("/jobs/{job_id}/download")
+async def download_job_results(job_id: str, session_name: str = ""):
+    """Re-download results for a completed job (available for up to 1 hour)."""
+    if job_id not in active_jobs:
+        raise HTTPException(404, "Job not found or already expired")
+    job = active_jobs[job_id]
+    if job.status != JobStatus.COMPLETED or not job.result_file:
+        raise HTTPException(400, "Job not completed or no results available")
+    result_path = Path(job.result_file)
+    if not result_path.exists():
+        raise HTTPException(404, "Result file no longer available")
+    stem = session_name if session_name else f"docking_{job_id}"
+    # Check if a zip (PyMOL session) exists alongside the SDF
+    zip_path = result_path.parent / f"{stem}.zip"
+    if zip_path.exists():
+        return FileResponse(path=str(zip_path), filename=f"{stem}.zip", media_type="application/zip")
+    return FileResponse(path=str(result_path), filename=f"{stem}.sdf", media_type="application/octet-stream")
+
+
 @app.get("/jobs/{job_id}")
 async def get_job_status(job_id: str):
     """Get status of a docking job."""
@@ -2689,9 +2800,172 @@ async def get_job_status(job_id: str):
     }
 
 
+# ============================================================================
+# PROTEIN PREPARATION ENDPOINTS
+# ============================================================================
+
+@app.post("/protprep/inspect")
+async def protprep_inspect(
+    pdb_file: Optional[UploadFile] = File(None),
+    pdb_id: Optional[str] = Form(None),
+):
+    """
+    Step 1: Load a PDB (upload or fetch by ID) and return structural info
+    including all HETATM groups so the user can pick a reference ligand.
+    """
+    if not pdb_file and not (pdb_id and pdb_id.strip()):
+        raise HTTPException(400, "Provide pdb_file or pdb_id")
+
+    token = str(uuid.uuid4())[:8]
+    prep_dir = WORK_DIR / f"protprep_{token}"
+    prep_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if pdb_id and pdb_id.strip():
+            pdb_id = pdb_id.strip().upper()
+            pdb_path = prep_dir / f"{pdb_id}.pdb"
+            # Fetch PDB; fall back to mmCIF → PDB via PDBFixer for structures
+            # not available in legacy PDB format (e.g. 6RLW, large assemblies)
+            fetch_script = prep_dir / "_fetch.py"
+            fetch_script.write_text(
+                f"import urllib.request, urllib.error\n"
+                f"from pathlib import Path\n"
+                f"out = Path({repr(str(pdb_path))})\n"
+                f"pdb_id = {repr(pdb_id)}\n"
+                f"try:\n"
+                f"    urllib.request.urlretrieve(\n"
+                f"        f'https://files.rcsb.org/download/{{pdb_id}}.pdb', str(out))\n"
+                f"except urllib.error.HTTPError as e:\n"
+                f"    if e.code != 404:\n"
+                f"        raise\n"
+                f"    cif_tmp = out.with_suffix('.cif')\n"
+                f"    urllib.request.urlretrieve(\n"
+                f"        f'https://files.rcsb.org/download/{{pdb_id}}.cif', str(cif_tmp))\n"
+                f"    from pdbfixer import PDBFixer\n"
+                f"    from openmm.app import PDBFile\n"
+                f"    fixer = PDBFixer(filename=str(cif_tmp))\n"
+                f"    with open(str(out), 'w') as f:\n"
+                f"        PDBFile.writeFile(fixer.topology, fixer.positions, f)\n"
+                f"    cif_tmp.unlink()\n"
+            )
+            proc = await asyncio.create_subprocess_exec(
+                OPENMMDL_PYTHON, str(fetch_script),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0 or not pdb_path.exists():
+                raise HTTPException(400, f"Could not fetch {pdb_id} from RCSB: {stderr.decode()[:300]}")
+        else:
+            content = await pdb_file.read()
+            pdb_path = prep_dir / secure_filename(pdb_file.filename)
+            pdb_path.write_bytes(content)
+
+        # Run _inspect via openmmdl python — silences all rich output
+        inspect_script = prep_dir / "_inspect.py"
+        inspect_script.write_text(
+            f"import sys, json\n"
+            f"sys.path.insert(0, {repr(str(Path(PROTPREP_SCRIPT).parent))})\n"
+            f"import protprep\n"
+            f"_noop = lambda *a, **k: None\n"
+            f"for _fn in ['_print','_ok','_warn','_info','_err','_step','_header','_rule','_rule']:\n"
+            f"    setattr(protprep, _fn, _noop)\n"
+            f"protprep._fatal = lambda msg: (_ for _ in ()).throw(SystemExit(msg))\n"
+            f"from pathlib import Path\n"
+            f"info = protprep._inspect(Path({repr(str(pdb_path))}))\n"
+            f"print(json.dumps(info))\n"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            OPENMMDL_PYTHON, str(inspect_script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise HTTPException(500, f"Inspect failed: {stderr.decode()[:500]}")
+
+        info = json.loads(stdout.decode())
+        return {
+            "token": token,
+            "pdb_filename": pdb_path.name,
+            "chains": info["chains"],
+            "chain_info": info["chain_info"],
+            "n_std": info["n_std"],
+            "n_water": info["n_water"],
+            "het_groups": info["het_groups"],
+            "n_altloc": info["n_altloc"],
+            "ssbonds": len(info["ssbonds"]),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(prep_dir, ignore_errors=True)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/protprep/run")
+async def protprep_run(
+    token: str = Form(...),
+    keep_het: str = Form(...),
+    ph: float = Form(7.4),
+    chains: Optional[str] = Form(None),   # space-separated, blank = all
+):
+    """
+    Step 2: Run the full protein preparation pipeline and return
+    the prepared receptor PDB and extracted reference ligand SDF as base64.
+    """
+    prep_dir = WORK_DIR / f"protprep_{token}"
+    if not prep_dir.exists():
+        raise HTTPException(404, "Session not found — please inspect the protein again")
+
+    pdb_files = [f for f in prep_dir.glob("*.pdb") if not f.stem.startswith("_")]
+    if not pdb_files:
+        raise HTTPException(404, "PDB file not found in session")
+    input_pdb = pdb_files[0]
+    stem = input_pdb.stem
+    output_pdb = prep_dir / f"{stem}_prepared.pdb"
+
+    cmd = [
+        OPENMMDL_PYTHON, PROTPREP_SCRIPT,
+        "--input",    str(input_pdb),
+        "--output",   str(output_pdb),
+        "--keep-het", keep_het,
+        "--ph",       str(ph),
+        "--no-pdb2pqr",  # pdb2pqr not installed; PDBFixer used instead
+    ]
+    if chains and chains.strip():
+        cmd += ["--chain"] + chains.split()
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(prep_dir),
+    )
+    stdout, stderr = await proc.communicate()
+    log_output = stdout.decode() + "\n" + stderr.decode()
+
+    if proc.returncode != 0 or not output_pdb.exists():
+        raise HTTPException(500, f"Protein preparation failed:\n{log_output[-2000:]}")
+
+    prepared_pdb_b64 = base64.b64encode(output_pdb.read_bytes()).decode()
+
+    lig_sdf = prep_dir / f"{stem}_prepared_ligand.sdf"
+    ligand_sdf_b64 = base64.b64encode(lig_sdf.read_bytes()).decode() if lig_sdf.exists() else None
+
+    return {
+        "prepared_pdb_name": output_pdb.name,
+        "prepared_pdb_b64": prepared_pdb_b64,
+        "ligand_sdf_name": lig_sdf.name if lig_sdf.exists() else None,
+        "ligand_sdf_b64": ligand_sdf_b64,
+        "log": log_output[-3000:],
+    }
+
+
 if __name__ == "__main__":
     uvicorn.run(
-        "gnina_app:app",
+        "gnina_webapp:app",
         host="130.237.250.75",
         port=9000,
         workers=1,  # Single worker for shared state

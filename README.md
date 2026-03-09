@@ -37,7 +37,7 @@ pip install posebusters  # optional, for PB_Flags
 
 ```bash
 conda activate gnina_webapp
-uvicorn gnina_app:app --host 0.0.0.0 --port 8000
+uvicorn gnina_webapp:app --host 0.0.0.0 --port 8000
 ```
 
 Then open `http://localhost:8000` in your browser.
@@ -74,7 +74,7 @@ A ZIP file containing:
 
 ## Configuration
 
-Key settings near the top of `gnina_app.py`:
+Key settings near the top of `gnina_webapp.py`:
 
 ```python
 GNINA_PATH = "/opt/gnina/gnina.1.3.2"

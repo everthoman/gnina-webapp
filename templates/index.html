@@ -463,6 +463,122 @@
             to { transform: rotate(360deg); }
         }
 
+        /* Protein Preparation */
+        .protprep-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid #1e3a5f;
+        }
+
+        .protprep-card h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #60a5fa;
+        }
+
+        .protprep-toggle {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .protprep-toggle button {
+            padding: 0.4rem 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+
+        .protprep-toggle button.active {
+            background: rgba(37, 99, 235, 0.2);
+            border-color: var(--primary);
+            color: var(--text);
+        }
+
+        .protprep-actions {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-top: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .btn-inspect {
+            padding: 0.5rem 1.25rem;
+            background: rgba(37, 99, 235, 0.15);
+            border: 1px solid var(--primary);
+            border-radius: 8px;
+            color: #60a5fa;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-inspect:hover { background: rgba(37, 99, 235, 0.3); }
+        .btn-inspect:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-prepare {
+            padding: 0.5rem 1.25rem;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid var(--success);
+            border-radius: 8px;
+            color: #34d399;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-prepare:hover { background: rgba(16, 185, 129, 0.3); }
+        .btn-prepare:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        #protprepResults {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .het-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            margin: 0.5rem 0;
+        }
+
+        .het-table th {
+            text-align: left;
+            padding: 0.4rem 0.75rem;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+            font-weight: 500;
+        }
+
+        .het-table td {
+            padding: 0.4rem 0.75rem;
+            border-bottom: 1px solid rgba(51,65,85,0.5);
+        }
+
+        .het-table tr:hover td { background: rgba(255,255,255,0.03); }
+
+        .protprep-status {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+
+        .protprep-status.success { color: var(--success); }
+        .protprep-status.error { color: var(--error); }
+
         /* Responsive */
         @media (max-width: 640px) {
             .container {
@@ -510,6 +626,77 @@
             <span id="alertSuccessMessage"></span>
         </div>
 
+        <!-- Protein Preparation -->
+        <div class="protprep-card">
+            <h2>🔬 Protein Preparation (optional)</h2>
+
+            <div class="protprep-toggle">
+                <button type="button" class="active" id="ppToggleFile" onclick="ppSwitchMode('file')">Upload PDB</button>
+                <button type="button" id="ppToggleFetch" onclick="ppSwitchMode('fetch')">Fetch from PDB ID</button>
+            </div>
+
+            <div id="ppFileSection">
+                <div class="form-group">
+                    <label>PDB File</label>
+                    <input type="file" id="ppPdbFile" accept=".pdb">
+                </div>
+            </div>
+
+            <div id="ppFetchSection" style="display:none">
+                <div class="form-group">
+                    <label>PDB ID</label>
+                    <input type="text" id="ppPdbId" placeholder="e.g. 3FCI" maxlength="10"
+                           style="text-transform:uppercase; width:12rem;">
+                </div>
+            </div>
+
+            <div class="protprep-actions">
+                <button type="button" class="btn-inspect" id="ppInspectBtn" onclick="ppInspect()">
+                    🔍 Inspect Structure
+                </button>
+                <span id="ppInspectStatus" class="protprep-status"></span>
+            </div>
+
+            <div id="protprepResults" style="display:none">
+                <div id="ppStructInfo" style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;"></div>
+
+                <div id="ppChainSection" style="margin-bottom:0.75rem;">
+                    <label style="font-size:0.875rem; font-weight:500; margin-bottom:0.5rem; display:block;">
+                        Chain(s) to keep <span style="color:var(--text-muted); font-weight:400;">(all selected by default)</span>
+                    </label>
+                    <div id="ppChainCheckboxes" style="display:flex; gap:0.5rem; flex-wrap:wrap;"></div>
+                </div>
+
+                <div id="ppHetSection" style="display:none">
+                    <label style="font-size:0.875rem; font-weight:500; margin-bottom:0.5rem; display:block;">
+                        Select reference ligand (HETATM group to keep)
+                    </label>
+                    <table class="het-table">
+                        <thead>
+                            <tr><th></th><th>Residue</th><th>Location(s)</th></tr>
+                        </thead>
+                        <tbody id="ppHetTableBody"></tbody>
+                    </table>
+                </div>
+
+                <div id="ppNoHetMsg" style="display:none; color:var(--warning); font-size:0.85rem; margin:0.5rem 0;">
+                    No HETATM groups found in this structure.
+                </div>
+
+                <div class="form-group" style="margin-top:0.75rem; max-width:10rem;">
+                    <label>Preparation pH</label>
+                    <input type="number" id="ppPh" value="7.4" step="0.1" min="0" max="14">
+                </div>
+
+                <div class="protprep-actions" style="margin-top:0.75rem;">
+                    <button type="button" class="btn-prepare" id="ppRunBtn" onclick="ppRun()">
+                        ⚙️ Prepare Protein
+                    </button>
+                    <span id="ppRunStatus" class="protprep-status"></span>
+                </div>
+            </div>
+        </div>
+
         <!-- Main form -->
         <form id="dockingForm">
             <!-- Receptor & Reference -->
@@ -541,16 +728,19 @@
                 <div id="smilesInputSection">
                     <div class="form-group">
                         <label>Enter SMILES (one per line)</label>
-                        <textarea 
-                            name="ligand_smiles" 
+                        <textarea
+                            name="ligand_smiles"
                             id="smilesInput"
-                            placeholder="CCO
+                            placeholder="SMILES only:
+CCO
 c1ccccc1
-CC(=O)Oc1ccccc1C(=O)O
-CC(C)Cc1ccc(cc1)C(C)C(=O)O
-CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
+
+SMILES with identifier (space, tab or comma separated):
+CCO ethanol
+c1ccccc1 benzene
+CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                         <div class="help-text">
-                            <span id="smilesCount">0</span> SMILES detected • Will be protonated and minimized automatically
+                            <span id="smilesCount">0</span> SMILES detected • Optional identifier after SMILES (space, tab or comma) • Will be protonated and minimized automatically
                         </div>
                     </div>
                 </div>
@@ -569,8 +759,8 @@ CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
                 <h2>⚙️ Docking Parameters</h2>
                 <div class="options-grid">
                     <div class="form-group">
-                        <label>Session Name</label>
-                        <input type="text" name="session_name" placeholder="e.g. 3FCI_run1">
+                        <label class="required">Session Name</label>
+                        <input type="text" name="session_name" id="sessionName" placeholder="e.g. 3FCI_run1" required>
                     </div>
                     <div class="form-group">
                         <label>LigPrep pH</label>
@@ -631,6 +821,12 @@ CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
                     </div>
                     <div class="form-group">
                         <label>
+                            <input type="checkbox" name="plif_sim" value="true">
+                            PLIF Similarity vs Reference
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
                             <input type="checkbox" name="posebusters" value="true">
                             PoseBusters Validation
                         </label>
@@ -682,6 +878,156 @@ CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
     </div>
 
     <script>
+        // ── Protein Preparation ────────────────────────────────────────────────
+
+        let ppMode = 'file';
+        let ppToken = null;
+        let ppHetGroups = {};
+
+        function ppSwitchMode(mode) {
+            ppMode = mode;
+            document.getElementById('ppFileSection').style.display = mode === 'file' ? '' : 'none';
+            document.getElementById('ppFetchSection').style.display = mode === 'fetch' ? '' : 'none';
+            document.getElementById('ppToggleFile').classList.toggle('active', mode === 'file');
+            document.getElementById('ppToggleFetch').classList.toggle('active', mode === 'fetch');
+        }
+
+        async function ppInspect() {
+            const btn = document.getElementById('ppInspectBtn');
+            const status = document.getElementById('ppInspectStatus');
+            status.className = 'protprep-status';
+            status.textContent = 'Inspecting…';
+            btn.disabled = true;
+            document.getElementById('protprepResults').style.display = 'none';
+
+            try {
+                const fd = new FormData();
+                if (ppMode === 'file') {
+                    const f = document.getElementById('ppPdbFile').files[0];
+                    if (!f) { status.textContent = 'Please select a PDB file.'; btn.disabled = false; return; }
+                    fd.append('pdb_file', f);
+                } else {
+                    const id = document.getElementById('ppPdbId').value.trim().toUpperCase();
+                    if (!id) { status.textContent = 'Please enter a PDB ID.'; btn.disabled = false; return; }
+                    fd.append('pdb_id', id);
+                }
+
+                const resp = await fetch('/protprep/inspect', { method: 'POST', body: fd });
+                const data = await resp.json();
+                if (!resp.ok) { status.className = 'protprep-status error'; status.textContent = data.detail || 'Inspect failed'; btn.disabled = false; return; }
+
+                ppToken = data.token;
+                ppHetGroups = data.het_groups || {};
+
+                // Structural summary
+                document.getElementById('ppStructInfo').textContent =
+                    `Std residues: ${data.n_std} | Waters: ${data.n_water}` +
+                    (data.ssbonds ? ` | Disulfides: ${data.ssbonds}` : '') +
+                    (data.n_altloc ? ` | Alt locs: ${data.n_altloc}` : '');
+
+                // Chain checkboxes
+                const chainBox = document.getElementById('ppChainCheckboxes');
+                chainBox.innerHTML = '';
+                data.chains.forEach(c => {
+                    const label = document.createElement('label');
+                    label.style.cssText = 'display:flex; align-items:center; gap:0.35rem; padding:0.3rem 0.75rem; background:rgba(255,255,255,0.05); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:0.85rem;';
+                    label.innerHTML = `<input type="checkbox" name="ppChain" value="${c}" checked> ${c} <span style="color:var(--text-muted);">(${data.chain_info[c]} res)</span>`;
+                    chainBox.appendChild(label);
+                });
+
+                // HETATM table
+                const tbody = document.getElementById('ppHetTableBody');
+                tbody.innerHTML = '';
+                const hetNames = Object.keys(ppHetGroups);
+                if (hetNames.length > 0) {
+                    hetNames.forEach((name, i) => {
+                        const locs = ppHetGroups[name].join(', ');
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td><input type="radio" name="ppHet" value="${name}" ${i === 0 ? 'checked' : ''}></td>
+                            <td style="font-family:monospace; font-weight:600;">${name}</td>
+                            <td style="color:var(--text-muted);">${locs}</td>`;
+                        tbody.appendChild(tr);
+                    });
+                    document.getElementById('ppHetSection').style.display = '';
+                    document.getElementById('ppNoHetMsg').style.display = 'none';
+                } else {
+                    document.getElementById('ppHetSection').style.display = 'none';
+                    document.getElementById('ppNoHetMsg').style.display = '';
+                }
+
+                document.getElementById('protprepResults').style.display = '';
+                status.className = 'protprep-status success';
+                status.textContent = `Found ${hetNames.length} HETATM group(s)`;
+            } catch (err) {
+                status.className = 'protprep-status error';
+                status.textContent = 'Error: ' + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function ppRun() {
+            if (!ppToken) return;
+            const selected = document.querySelector('input[name="ppHet"]:checked');
+            if (!selected) { alert('Please select a reference ligand.'); return; }
+
+            const btn = document.getElementById('ppRunBtn');
+            const status = document.getElementById('ppRunStatus');
+            btn.disabled = true;
+            status.className = 'protprep-status';
+            status.textContent = 'Preparing protein… (this may take 1–2 min)';
+
+            try {
+                const selectedChains = [...document.querySelectorAll('input[name="ppChain"]:checked')]
+                    .map(cb => cb.value).join(' ');
+
+                const fd = new FormData();
+                fd.append('token', ppToken);
+                fd.append('keep_het', selected.value);
+                fd.append('ph', document.getElementById('ppPh').value);
+                if (selectedChains) fd.append('chains', selectedChains);
+
+                const resp = await fetch('/protprep/run', { method: 'POST', body: fd });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    status.className = 'protprep-status error';
+                    status.textContent = (data.detail || 'Preparation failed').split('\n')[0];
+                    btn.disabled = false;
+                    return;
+                }
+
+                // Auto-populate receptor file input
+                if (data.prepared_pdb_b64) {
+                    const pdbBytes = Uint8Array.from(atob(data.prepared_pdb_b64), c => c.charCodeAt(0));
+                    const pdbFile = new File([pdbBytes], data.prepared_pdb_name, { type: 'chemical/x-pdb' });
+                    const dt1 = new DataTransfer();
+                    dt1.items.add(pdbFile);
+                    document.getElementById('receptorFile').files = dt1.files;
+                    document.getElementById('receptorInfo').textContent = `✓ ${data.prepared_pdb_name} (prepared)`;
+                }
+
+                // Auto-populate reference ligand file input
+                if (data.ligand_sdf_b64) {
+                    const sdfBytes = Uint8Array.from(atob(data.ligand_sdf_b64), c => c.charCodeAt(0));
+                    const sdfFile = new File([sdfBytes], data.ligand_sdf_name, { type: 'chemical/x-mdl-sdfile' });
+                    const dt2 = new DataTransfer();
+                    dt2.items.add(sdfFile);
+                    document.getElementById('referenceFile').files = dt2.files;
+                }
+
+                status.className = 'protprep-status success';
+                status.textContent = 'Done! Receptor and reference ligand auto-populated below.';
+            } catch (err) {
+                status.className = 'protprep-status error';
+                status.textContent = 'Error: ' + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // ── Docking form ───────────────────────────────────────────────────────
+
         // State
         let currentInputMode = 'smiles';
         let ws = null;
@@ -771,7 +1117,7 @@ CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
         // Update progress
         function updateProgress(data) {
             document.getElementById('progressBar').style.width = `${data.progress}%`;
-            document.getElementById('progressMessage').textContent = data.message || 'Processing...';
+            document.getElementById('progressMessage').innerHTML = data.message || 'Processing...';
             
             // Status badge
             const statusEl = document.getElementById('progressStatus');
@@ -811,6 +1157,13 @@ CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
             const receptorFile = document.getElementById('receptorFile').files[0];
             const referenceFile = document.getElementById('referenceFile').files[0];
             
+            const sessionName = document.getElementById('sessionName').value.trim();
+            if (!sessionName) {
+                showAlert('error', 'Please enter a Session Name');
+                document.getElementById('sessionName').focus();
+                return;
+            }
+
             if (!receptorFile) {
                 showAlert('error', 'Please upload a receptor PDB file');
                 return;
@@ -868,32 +1221,35 @@ CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
                 });
                 
                 if (response.ok) {
-                    // Success - download file
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    
-                    // Get filename from header or use default
+                    // Capture job ID for re-download
+                    const completedJobId = response.headers.get('x-job-id');
                     const disposition = response.headers.get('content-disposition');
                     let filename = 'docking_results.sdf';
                     if (disposition) {
                         const match = disposition.match(/filename="?([^"]+)"?/);
                         if (match) filename = match[1];
                     }
-                    
+
+                    // Success - download file
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
                     a.download = filename;
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
                     window.URL.revokeObjectURL(url);
-                    
+
+                    const redownloadMsg = completedJobId
+                        ? ` <a href="/jobs/${completedJobId}/download" style="color:#34d399; text-decoration:underline;">Re-download</a> (available 1 h)`
+                        : '';
                     updateProgress({
                         status: 'completed',
                         progress: 100,
-                        message: 'Docking complete! Results downloaded.'
+                        message: 'Docking complete! Results downloaded.' + redownloadMsg
                     });
-                    
+
                     showAlert('success', 'Docking completed successfully! Check your downloads.');
                     
                 } else {
