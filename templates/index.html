@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GNINA Molecular Docking</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 2rem;
+            background: linear-gradient(135deg, var(--bg-card) 0%, #0f172a 100%);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header p {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        .stats-bar {
+            display: flex;
+            justify-content: center;
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: rgba(37, 99, 235, 0.1);
+            border: 1px solid rgba(37, 99, 235, 0.3);
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+
+        .stat-icon {
+            font-size: 1.1rem;
+        }
+
+        /* Form */
+        .form-card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .form-card h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-group.full-width {
+            grid-column: 1 / -1;
+        }
+
+        label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .required::after {
+            content: '*';
+            color: var(--error);
+            margin-left: 4px;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--bg-dark);
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        input[type="file"]:hover,
+        input[type="file"]:focus {
+            border-color: var(--primary);
+            outline: none;
+        }
+
+        input[type="file"]::file-selector-button {
+            padding: 0.5rem 1rem;
+            margin-right: 1rem;
+            background: var(--primary);
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 0.75rem;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        input[type="number"]:focus,
+        select:focus {
+            border-color: var(--primary);
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 1rem;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-family: 'Fira Code', 'Consolas', monospace;
+            font-size: 0.85rem;
+            resize: vertical;
+            transition: all 0.2s;
+        }
+
+        textarea:focus {
+            border-color: var(--primary);
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+        }
+
+        textarea::placeholder {
+            color: var(--text-muted);
+            opacity: 0.6;
+        }
+
+        /* Input toggle */
+        .input-toggle {
+            display: flex;
+            background: var(--bg-dark);
+            border-radius: 8px;
+            padding: 4px;
+            margin-bottom: 1rem;
+        }
+
+        .toggle-btn {
+            flex: 1;
+            padding: 0.6rem 1rem;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .toggle-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        .toggle-btn:hover:not(.active) {
+            color: var(--text);
+        }
+
+        /* Options grid */
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 1rem;
+        }
+
+        /* GPU Status */
+        .gpu-status {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .gpu-card {
+            flex: 1;
+            padding: 1rem;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .gpu-card.active {
+            border-color: var(--success);
+        }
+
+        .gpu-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .gpu-card.active .gpu-name {
+            color: var(--success);
+        }
+
+        .gpu-info {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* Submit button */
+        .submit-btn {
+            width: 100%;
+            padding: 1rem 2rem;
+            background: linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+        }
+
+        .submit-btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px rgba(37, 99, 235, 0.3);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* Progress panel */
+        .progress-panel {
+            display: none;
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            padding: 2rem;
+            margin-top: 1.5rem;
+        }
+
+        .progress-panel.visible {
+            display: block;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .progress-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+
+        .progress-status {
+            padding: 0.35rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .progress-status.preparing { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        .progress-status.docking { background: rgba(37, 99, 235, 0.2); color: var(--primary); }
+        .progress-status.completed { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+        .progress-status.failed { background: rgba(239, 68, 68, 0.2); color: var(--error); }
+
+        .progress-bar-container {
+            background: var(--bg-dark);
+            border-radius: 8px;
+            height: 12px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--success));
+            width: 0%;
+            transition: width 0.5s ease;
+            border-radius: 8px;
+        }
+
+        .progress-message {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .progress-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+        }
+
+        .progress-detail {
+            padding: 0.75rem;
+            background: var(--bg-dark);
+            border-radius: 8px;
+        }
+
+        .progress-detail-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+
+        .progress-detail-value {
+            font-size: 1rem;
+            font-weight: 600;
+            font-family: 'Fira Code', monospace;
+        }
+
+        /* Alerts */
+        .alert {
+            padding: 1rem 1.25rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .alert.visible {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+        }
+
+        .alert-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+        }
+
+        .alert-success {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #6ee7b7;
+        }
+
+        .alert-icon {
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        /* File info */
+        .file-info {
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .file-info.valid {
+            color: var(--success);
+        }
+
+        /* Help text */
+        .help-text {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+
+        /* Spinner */
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .container {
+                padding: 1rem;
+            }
+
+            .header {
+                padding: 1.5rem;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            .stats-bar {
+                gap: 0.5rem;
+            }
+
+            .stat {
+                padding: 0.4rem 0.75rem;
+                font-size: 0.75rem;
+            }
+
+            .form-card {
+                padding: 1.25rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>🧬 GNINA Molecular Docking</h1>
+            <p>GPU-accelerated molecular docking with deep learning scoring</p>
+        </header>
+
+        <!-- Alert messages -->
+        <div id="alertError" class="alert alert-error">
+            <span class="alert-icon">⚠️</span>
+            <span id="alertErrorMessage"></span>
+        </div>
+        <div id="alertSuccess" class="alert alert-success">
+            <span class="alert-icon">✅</span>
+            <span id="alertSuccessMessage"></span>
+        </div>
+
+        <!-- Main form -->
+        <form id="dockingForm">
+            <!-- Receptor & Reference -->
+            <div class="form-card">
+                <h2>📁 Input Structures</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="required">Protein Target (PDB)</label>
+                        <input type="file" name="receptor" id="receptorFile" accept=".pdb" required>
+                        <div id="receptorInfo" class="file-info"></div>
+                    </div>
+                    <div class="form-group">
+                        <label class="required">Reference Ligand (SDF)</label>
+                        <input type="file" name="reference" id="referenceFile" accept=".sdf,.mol" required>
+                        <div class="help-text">Defines the binding site location (autobox)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Ligands -->
+            <div class="form-card">
+                <h2>⚗️ Ligands to Dock</h2>
+                
+                <div class="input-toggle">
+                    <button type="button" class="toggle-btn active" data-input="smiles">SMILES Input</button>
+                    <button type="button" class="toggle-btn" data-input="file">SDF File</button>
+                </div>
+
+                <div id="smilesInputSection">
+                    <div class="form-group">
+                        <label>Enter SMILES (one per line)</label>
+                        <textarea 
+                            name="ligand_smiles" 
+                            id="smilesInput"
+                            placeholder="CCO
+c1ccccc1
+CC(=O)Oc1ccccc1C(=O)O
+CC(C)Cc1ccc(cc1)C(C)C(=O)O
+CN1C=NC2=C1C(=O)N(C(=O)N2C)C"></textarea>
+                        <div class="help-text">
+                            <span id="smilesCount">0</span> SMILES detected • Will be protonated and minimized automatically
+                        </div>
+                    </div>
+                </div>
+
+                <div id="fileInputSection" style="display: none;">
+                    <div class="form-group">
+                        <label>Upload SDF File</label>
+                        <input type="file" name="ligand_file" id="ligandFile" accept=".sdf">
+                        <div id="ligandInfo" class="file-info"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings -->
+            <div class="form-card">
+                <h2>⚙️ Docking Parameters</h2>
+                <div class="options-grid">
+                    <div class="form-group">
+                        <label>Session Name</label>
+                        <input type="text" name="session_name" placeholder="e.g. 3FCI_run1">
+                    </div>
+                    <div class="form-group">
+                        <label>LigPrep pH</label>
+                        <input type="number" name="ph" value="7.4" step="0.1" min="0" max="14">
+                    </div>
+                    <div class="form-group">
+                        <label>Poses per Ligand</label>
+                        <input type="number" name="num_poses" value="9" min="1" max="50">
+                    </div>
+                    <div class="form-group">
+                        <label>Exhaustiveness</label>
+                        <input type="number" name="exhaustiveness" value="8" min="1" max="64">
+                    </div>
+                    <div class="form-group">
+                        <label>Random Seed</label>
+                        <input type="number" name="seed" value="666">
+                    </div>
+                    <div class="form-group">
+                        <label>CNN Scoring</label>
+                        <select name="cnn_scoring">
+                            <option value="rescore" selected>Rescore (Fast)</option>
+                            <option value="refine">Refine (Accurate)</option>
+                            <option value="score_only">Score Only</option>
+                            <option value="none">None (AutoDock only)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Sort Results By</label>
+                        <select name="sort_by">
+                            <option value="minimizedAffinity" selected>AutoDock Affinity</option>
+                            <option value="CNN_VS">CNN_VS</option>
+                            <option value="CNNaffinity">CNN Affinity</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="generate_pymol" value="true">
+                            Generate PyMOL Session
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="mcs_rmsd" value="true">
+                            MCS RMSD vs Reference
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="shape_sim" value="true">
+                            Shape Similarity vs Reference
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="ref_sim" value="true">
+                            2D Similarity vs Reference (ECFP4)
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="posebusters" value="true">
+                            PoseBusters Validation
+                        </label>
+                    </div>
+                </div>
+
+
+            </div>
+
+            <!-- Submit -->
+            <button type="submit" class="submit-btn" id="submitBtn">
+                <span id="submitText">🚀 Start Docking</span>
+                <div class="spinner" id="submitSpinner" style="display: none;"></div>
+            </button>
+        </form>
+
+        <!-- Progress panel -->
+        <div class="progress-panel" id="progressPanel">
+            <div class="progress-header">
+                <span class="progress-title">Docking Progress</span>
+                <span class="progress-status" id="progressStatus">Preparing</span>
+            </div>
+            
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            
+            <div class="progress-message" id="progressMessage">Initializing...</div>
+            
+            <div class="progress-details">
+                <div class="progress-detail">
+                    <div class="progress-detail-label">Stage</div>
+                    <div class="progress-detail-value" id="currentStage">—</div>
+                </div>
+                <div class="progress-detail">
+                    <div class="progress-detail-label">Ligands</div>
+                    <div class="progress-detail-value" id="ligandProgress">0 / 0</div>
+                </div>
+                <div class="progress-detail">
+                    <div class="progress-detail-label">Preparation</div>
+                    <div class="progress-detail-value" id="timePrepare">—</div>
+                </div>
+                <div class="progress-detail">
+                    <div class="progress-detail-label">Docking</div>
+                    <div class="progress-detail-value" id="timeDocking">—</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let currentInputMode = 'smiles';
+        let ws = null;
+        let jobId = null;
+
+        // DOM elements
+        const form = document.getElementById('dockingForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const submitText = document.getElementById('submitText');
+        const submitSpinner = document.getElementById('submitSpinner');
+        const progressPanel = document.getElementById('progressPanel');
+        const smilesInput = document.getElementById('smilesInput');
+        const alertError = document.getElementById('alertError');
+        const alertSuccess = document.getElementById('alertSuccess');
+
+        // Toggle input mode
+        document.querySelectorAll('.toggle-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                currentInputMode = btn.dataset.input;
+                
+                document.getElementById('smilesInputSection').style.display = 
+                    currentInputMode === 'smiles' ? 'block' : 'none';
+                document.getElementById('fileInputSection').style.display = 
+                    currentInputMode === 'file' ? 'block' : 'none';
+            });
+        });
+
+        // Count SMILES
+        smilesInput.addEventListener('input', () => {
+            const lines = smilesInput.value.split('\n').filter(line => line.trim());
+            document.getElementById('smilesCount').textContent = lines.length;
+        });
+
+        // File validation
+        document.getElementById('receptorFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            const info = document.getElementById('receptorInfo');
+            if (file) {
+                info.textContent = `✓ ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                info.classList.add('valid');
+            } else {
+                info.textContent = '';
+                info.classList.remove('valid');
+            }
+        });
+
+        document.getElementById('ligandFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            const info = document.getElementById('ligandInfo');
+            if (file) {
+                info.textContent = `✓ ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                info.classList.add('valid');
+            } else {
+                info.textContent = '';
+                info.classList.remove('valid');
+            }
+        });
+
+        // Show alert
+        function showAlert(type, message) {
+            const alert = type === 'error' ? alertError : alertSuccess;
+            const msgEl = type === 'error' ? 
+                document.getElementById('alertErrorMessage') : 
+                document.getElementById('alertSuccessMessage');
+            
+            // Hide other alerts
+            alertError.classList.remove('visible');
+            alertSuccess.classList.remove('visible');
+            
+            msgEl.textContent = message;
+            alert.classList.add('visible');
+            
+            // Auto-hide success after 5s
+            if (type === 'success') {
+                setTimeout(() => alert.classList.remove('visible'), 5000);
+            }
+        }
+
+        function hideAlerts() {
+            alertError.classList.remove('visible');
+            alertSuccess.classList.remove('visible');
+        }
+
+        // Update progress
+        function updateProgress(data) {
+            document.getElementById('progressBar').style.width = `${data.progress}%`;
+            document.getElementById('progressMessage').textContent = data.message || 'Processing...';
+            
+            // Status badge
+            const statusEl = document.getElementById('progressStatus');
+            statusEl.textContent = data.status;
+            statusEl.className = 'progress-status ' + data.status;
+            
+            // Stage
+            if (data.current_stage) {
+                document.getElementById('currentStage').textContent = data.current_stage;
+            }
+            
+            // Ligand count
+            if (data.total_ligands > 0) {
+                document.getElementById('ligandProgress').textContent = 
+                    `${data.processed_ligands || 0} / ${data.total_ligands}`;
+            }
+            
+            // Timings
+            if (data.timings) {
+                if (data.timings.preparation) {
+                    document.getElementById('timePrepare').textContent = 
+                        `${data.timings.preparation.toFixed(1)}s`;
+                }
+                if (data.timings.docking) {
+                    document.getElementById('timeDocking').textContent = 
+                        `${data.timings.docking.toFixed(1)}s`;
+                }
+            }
+        }
+
+        // Submit form
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideAlerts();
+            
+            // Validate
+            const receptorFile = document.getElementById('receptorFile').files[0];
+            const referenceFile = document.getElementById('referenceFile').files[0];
+            
+            if (!receptorFile) {
+                showAlert('error', 'Please upload a receptor PDB file');
+                return;
+            }
+            
+            if (!referenceFile) {
+                showAlert('error', 'Please upload a reference ligand SDF file');
+                return;
+            }
+            
+            if (currentInputMode === 'smiles') {
+                const smiles = smilesInput.value.trim();
+                if (!smiles) {
+                    showAlert('error', 'Please enter at least one SMILES string');
+                    return;
+                }
+            } else {
+                const ligandFile = document.getElementById('ligandFile').files[0];
+                if (!ligandFile) {
+                    showAlert('error', 'Please upload a ligand SDF file');
+                    return;
+                }
+            }
+            
+            // Prepare form data
+            const formData = new FormData(form);
+
+            // Remove empty fields
+            if (currentInputMode === 'smiles') {
+                formData.delete('ligand_file');
+            } else {
+                formData.delete('ligand_smiles');
+            }
+
+            // UI state
+            submitBtn.disabled = true;
+            submitText.textContent = 'Processing...';
+            submitSpinner.style.display = 'block';
+            progressPanel.classList.add('visible');
+            
+            // Reset progress
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('progressMessage').textContent = 'Submitting job...';
+            document.getElementById('progressStatus').textContent = 'pending';
+            document.getElementById('progressStatus').className = 'progress-status';
+            document.getElementById('currentStage').textContent = '—';
+            document.getElementById('ligandProgress').textContent = '0 / 0';
+            document.getElementById('timePrepare').textContent = '—';
+            document.getElementById('timeDocking').textContent = '—';
+            
+            try {
+                const response = await fetch('/dock', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    // Success - download file
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    
+                    // Get filename from header or use default
+                    const disposition = response.headers.get('content-disposition');
+                    let filename = 'docking_results.sdf';
+                    if (disposition) {
+                        const match = disposition.match(/filename="?([^"]+)"?/);
+                        if (match) filename = match[1];
+                    }
+                    
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    updateProgress({
+                        status: 'completed',
+                        progress: 100,
+                        message: 'Docking complete! Results downloaded.'
+                    });
+                    
+                    showAlert('success', 'Docking completed successfully! Check your downloads.');
+                    
+                } else {
+                    // Error
+                    let errorMsg = 'Docking failed';
+                    try {
+                        const errorData = await response.json();
+                        errorMsg = errorData.detail || errorData.error || errorMsg;
+                    } catch {
+                        errorMsg = await response.text() || errorMsg;
+                    }
+                    
+                    updateProgress({
+                        status: 'failed',
+                        progress: 0,
+                        message: errorMsg
+                    });
+                    
+                    showAlert('error', errorMsg);
+                }
+                
+            } catch (error) {
+                console.error('Error:', error);
+                updateProgress({
+                    status: 'failed',
+                    progress: 0,
+                    message: error.message
+                });
+                showAlert('error', `Request failed: ${error.message}`);
+                
+            } finally {
+                submitBtn.disabled = false;
+                submitText.textContent = '🚀 Start Docking';
+                submitSpinner.style.display = 'none';
+            }
+        });
+
+        // Connect WebSocket for progress updates (optional)
+        function connectWebSocket(jobId) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateProgress(data);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+    </script>
+</body>
+</html>

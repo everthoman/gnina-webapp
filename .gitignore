@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.log
+*.pse
+*.zip
+
+# Test/scratch data
+*.sdf
+*.pdb
+*.smi
+*.dwar
+
+# Job working directories (created at runtime)
+jobs/

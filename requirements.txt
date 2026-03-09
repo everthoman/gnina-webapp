@@ -1,0 +1,17 @@
+# GNINA Docking Web Application Dependencies
+# Install with: pip install -r requirements.txt
+
+# Web framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+
+# Chemistry
+rdkit>=2023.9.1
+
+# Note: RDKit and OpenBabel are best installed via conda:
+# conda install -c conda-forge rdkit openbabel
+
+# For production deployment (optional)
+gunicorn>=21.2.0
