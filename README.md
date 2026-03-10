@@ -13,6 +13,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
   - `Shape_Sim` — 3D shape Tanimoto similarity vs reference ligand (RDKit)
   - `Ref_Sim` — 2D Morgan ECFP4 Tanimoto similarity vs reference ligand (RDKit)
   - `PB_Flags` — [PoseBusters](https://github.com/maabuu/posebusters) failure count (`config='mol'`)
+- **Protein preparation**: Optional integrated pipeline (PDBFixer protonation + OpenMM restrained minimization) — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs
 - **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, binding site surface, reference ligand (green sticks), and docked poses
 - **Named sessions**: User-defined session name propagated to output SDF, PSE, and ZIP filenames
 - **DataWarrior-compatible SDF output**: Correct protonation states (COO⁻, NH₃⁺), proper block formatting, DockingRank field
@@ -24,13 +25,26 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
 - [OpenBabel](https://openbabel.org) ≥ 3.1 (with tetrazole phmodel fix — see below)
 - [PyMOL](https://pymol.org) (open-source or commercial, headless-capable)
 
-### Python environment
+### Python environments
+
+**Main app** (`gnina_webapp` env):
 ```bash
 conda create -n gnina_webapp python=3.10
 conda activate gnina_webapp
 conda install -c conda-forge rdkit openbabel
 pip install -r requirements.txt
 pip install posebusters  # optional, for PB_Flags
+```
+
+**Protein preparation** (`openmmdl` env — only needed for the Protein Preparation feature):
+```bash
+conda create -n openmmdl python=3.10
+conda activate openmmdl
+conda install -c conda-forge biopython pdbfixer openmm
+```
+The protein preparation pipeline (`protprep.py`) is called as a subprocess using the `openmmdl` Python interpreter. Set the `OPENMMDL_PYTHON` environment variable if it is installed at a non-default path:
+```bash
+export OPENMMDL_PYTHON=/path/to/envs/openmmdl/bin/python
 ```
 
 ## Usage
@@ -45,6 +59,7 @@ Then open `http://localhost:8000` in your browser.
 ### Inputs
 | Field | Description |
 |---|---|
+| Protein Preparation | Optional: upload or fetch PDB, select chains/reference ligand, runs PDBFixer + OpenMM minimization, auto-fills receptor and reference inputs |
 | Receptor (PDB) | Protein structure for docking |
 | Reference ligand (SDF) | Defines the binding site (autobox); used as reference for post-processing metrics |
 | Ligands (SDF or SMILES) | Molecules to dock |
@@ -66,6 +81,7 @@ A ZIP file containing:
 | `minimizedAffinity` | Vina-style binding affinity (kcal/mol) |
 | `CNNscore` | GNINA CNN pose quality score |
 | `CNNaffinity` | GNINA CNN predicted affinity |
+| `CNN_VS` | GNINA CNN virtual screening score |
 | `DockingRank` | Pose rank within each ligand |
 | `MCS_RMSD` | MCS-aligned RMSD to reference (Å) |
 | `Shape_Sim` | 3D shape Tanimoto similarity to reference (0–1) |

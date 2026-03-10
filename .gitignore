@@ -12,3 +12,4 @@ __pycache__/
 
 # Job working directories (created at runtime)
 jobs/
+gnina_webapp_backup.py

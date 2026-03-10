@@ -672,7 +672,7 @@ PYMOL_PATH = os.environ.get('PYMOL_PATH', '/home/evehom/Programs/miniconda3/envs
 
 # Protein preparation (protprep.py) — runs in openmmdl conda env
 OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON', '/home/evehom/Programs/miniconda3/envs/openmmdl/bin/python')
-PROTPREP_SCRIPT = os.environ.get('PROTPREP_SCRIPT', '/home/evehom/Data/Scripts/SBDD/protprep.py')
+PROTPREP_SCRIPT = os.environ.get('PROTPREP_SCRIPT', str(Path(__file__).parent / 'protprep.py'))
 SBDD_PYTHON = os.environ.get('SBDD_PYTHON', '/home/evehom/Programs/miniconda3/envs/sbdd/bin/python')
 
 # ============================================================================
@@ -1413,14 +1413,13 @@ ligand_objs = [{ligand_obj_list}]
 for obj in ligand_objs:
     cmd.hide('sticks', obj + ' and hydro and (neighbor (elem C))')
 
-# --- Binding-site residues within 4 Å of any docked pose: polar H shown ---
+# --- Binding-site atoms within 5 Å of any docked pose: lines + polar H shown ---
 all_ligands_sel = ' or '.join(ligand_objs) if ligand_objs else 'none'
-cmd.select('binding_site', f'protein and byres (protein within 4 of ({{all_ligands_sel}}))')
+cmd.select('binding_site', f'protein within 5 of ({{all_ligands_sel}})')
 cmd.show('lines', 'binding_site')
 cmd.hide('lines', 'binding_site and hydro and (neighbor (elem C))')
 
-# Transparent light-grey surface on binding-site residues only, on the protein object
-# surface_color overrides surface colour independently of cartoon colour
+# Transparent light-grey surface on binding-site atoms only
 cmd.show('surface', 'binding_site')
 cmd.set('surface_color', 'grey90', 'protein')
 cmd.set('transparency', 0.5, 'protein')
@@ -2933,6 +2932,7 @@ async def protprep_run(
         "--keep-het", keep_het,
         "--ph",       str(ph),
         "--no-pdb2pqr",  # pdb2pqr not installed; PDBFixer used instead
+        "--minimize",    # OpenMM restrained vacuum minimization to optimize H positions
     ]
     if chains and chains.strip():
         cmd += ["--chain"] + chains.split()
