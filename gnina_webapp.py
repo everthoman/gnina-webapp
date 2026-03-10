@@ -2949,13 +2949,18 @@ async def protprep_run(
     if proc.returncode != 0 or not output_pdb.exists():
         raise HTTPException(500, f"Protein preparation failed:\n{log_output[-2000:]}")
 
-    prepared_pdb_b64 = base64.b64encode(output_pdb.read_bytes()).decode()
+    # --minimize writes a separate _minimized.pdb; prefer it over _prepared.pdb
+    # since the prepared file is written before minimization runs.
+    minimized_pdb = prep_dir / f"{stem}_minimized.pdb"
+    final_pdb = minimized_pdb if minimized_pdb.exists() else output_pdb
+
+    prepared_pdb_b64 = base64.b64encode(final_pdb.read_bytes()).decode()
 
     lig_sdf = prep_dir / f"{stem}_prepared_ligand.sdf"
     ligand_sdf_b64 = base64.b64encode(lig_sdf.read_bytes()).decode() if lig_sdf.exists() else None
 
     return {
-        "prepared_pdb_name": output_pdb.name,
+        "prepared_pdb_name": final_pdb.name,
         "prepared_pdb_b64": prepared_pdb_b64,
         "ligand_sdf_name": lig_sdf.name if lig_sdf.exists() else None,
         "ligand_sdf_b64": ligand_sdf_b64,
