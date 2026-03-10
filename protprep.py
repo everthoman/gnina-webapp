@@ -247,10 +247,16 @@ class _ChainSelector(Select):
     def __init__(self, chains=None, keep_resnames=None, structure=None):
         self.chains = set(chains) if chains else None
         self.keep_res = {r.strip().upper() for r in (keep_resnames or [])}
+        # Chains that contain a keep_res residue — accepted even when not in
+        # the user-selected chain list (handles ligand-only chains, e.g. K8Q
+        # living in chains F–J while the user keeps only chain A).
+        self._keep_res_chains: set = set()
         # (chain_id, res_full_id, atom_name) → set of altloc chars present
         self._atom_altlocs: Dict[tuple, set] = {}
         if structure is not None:
             self._scan_altlocs(structure)
+            if self.chains is not None and self.keep_res:
+                self._scan_keep_res_chains(structure)
 
     def _scan_altlocs(self, structure):
         """Pre-scan: record every altloc that exists for every atom."""
@@ -265,8 +271,18 @@ class _ChainSelector(Select):
                             atom.get_altloc()
                         )
 
+    def _scan_keep_res_chains(self, structure):
+        """Pre-scan: find which chains contain any keep_res residue."""
+        for model in structure:
+            for chain in model:
+                for residue in chain:
+                    if residue.get_resname().strip().upper() in self.keep_res:
+                        self._keep_res_chains.add(chain.get_id())
+
     def accept_chain(self, chain):
-        return self.chains is None or chain.get_id() in self.chains
+        if self.chains is None:
+            return True
+        return chain.get_id() in self.chains or chain.get_id() in self._keep_res_chains
 
     def accept_residue(self, residue):
         hetflag, _, _ = residue.get_id()
@@ -914,6 +930,71 @@ def _count_clashes(pdb_path: Path, cutoff: float = 1.5) -> int:
         return clashes
     except Exception:
         return -1
+
+
+def _filter_nearest_hetatm(hetatm_lines: List[str], protein_pdb: Path) -> List[str]:
+    """When there are multiple instances of the same HETATM residue (e.g. K8Q
+    in chains F, G, H …), return only the instance whose atoms are closest to
+    any protein atom.  Falls back to all lines if parsing fails or only one
+    instance exists.  Non-HETATM lines (REMARK, CONECT …) are always kept.
+    """
+    from collections import defaultdict
+
+    groups: dict = defaultdict(list)
+    other_lines: List[str] = []
+    for line in hetatm_lines:
+        if line[:6].strip() != 'HETATM':
+            other_lines.append(line)
+            continue
+        chain_id = line[21] if len(line) > 21 else '?'
+        try:
+            seq_id = int(line[22:26].strip())
+        except (ValueError, IndexError):
+            other_lines.append(line)
+            continue
+        groups[(chain_id, seq_id)].append(line)
+
+    if len(groups) <= 1:
+        return hetatm_lines  # Nothing to filter
+
+    # Collect protein atom positions
+    try:
+        prot_atoms = []
+        for pl in protein_pdb.read_text().splitlines():
+            if pl[:6].strip() in ('ATOM', 'HETATM'):
+                try:
+                    prot_atoms.append([float(pl[30:38]), float(pl[38:46]), float(pl[46:54])])
+                except (ValueError, IndexError):
+                    pass
+    except Exception:
+        return hetatm_lines  # Fallback: return all
+
+    if not prot_atoms or not _NUMPY:
+        return hetatm_lines
+
+    prot_arr = np.array(prot_atoms)
+    best_key, best_dist = None, float('inf')
+    for key, lines in groups.items():
+        lig_atoms = []
+        for ll in lines:
+            try:
+                lig_atoms.append([float(ll[30:38]), float(ll[38:46]), float(ll[46:54])])
+            except (ValueError, IndexError):
+                pass
+        if not lig_atoms:
+            continue
+        lig_arr = np.array(lig_atoms)
+        # Minimum distance between any ligand atom and any protein atom
+        diffs = prot_arr[:, None, :] - lig_arr[None, :, :]
+        min_dist = float(np.sqrt((diffs ** 2).sum(-1)).min())
+        if min_dist < best_dist:
+            best_dist, best_key = min_dist, key
+
+    if best_key is None:
+        return hetatm_lines
+    _info(f"  Reference ligand: using instance {best_key[0]}:{best_key[1]} "
+          f"(nearest to protein, {best_dist:.1f} Å)")
+    return other_lines + groups[best_key]
 
 
 def _split_protein_hetatm(
@@ -1770,11 +1851,28 @@ def main():
             _info(f"Saved: {dst.name}")
         _ok("Cleaning done")
 
+        # ── Separate HETATM from protein before PDBFixer repair ───────────────
+        # PDBFixer's replaceNonstandardResidues() silently converts modified
+        # residues (e.g. K8Q) selected as the reference ligand into standard
+        # amino acids, destroying the HETATM records needed for the ligand SDF.
+        # Splitting here preserves them unchanged for OpenBabel protonation.
+        prot_for_fix_pdb = tmp / 'protein_for_fix.pdb'
+        hetatm_lines, _ = _split_protein_hetatm(clean_pdb, prot_for_fix_pdb)
+        if hetatm_lines:
+            n_het_rec = sum(1 for l in hetatm_lines if l[:6].strip() == 'HETATM')
+            _info(f"HETATM separated: {n_het_rec} record(s) — protonated separately")
+            # When chain selection is active and the reference ligand exists in
+            # multiple instances (e.g. K8Q in chains F, G, H …), keep only the
+            # instance nearest to the selected protein chains so the autobox is
+            # placed at the correct binding site.
+            if args.chain:
+                hetatm_lines = _filter_nearest_hetatm(hetatm_lines, prot_for_fix_pdb)
+
         # ── Step: Fix ─────────────────────────────────────────────────────────
         if not args.skip_fix:
             next_step("Repairing missing residues and atoms")
             fixed_pdb = tmp / 'fixed.pdb'
-            fix_stats = step_fix(clean_pdb, fixed_pdb,
+            fix_stats = step_fix(prot_for_fix_pdb, fixed_pdb,
                                  replace_nonstandard=not args.keep_mse)
             stats['fix'] = fix_stats
             if args.keep_intermediates:
@@ -1783,7 +1881,7 @@ def main():
                 _info(f"Saved: {dst.name}")
             _ok("Repair done")
         else:
-            fixed_pdb = clean_pdb
+            fixed_pdb = prot_for_fix_pdb
             _print()
             _warn("Skipping PDBFixer repair (--skip-fix)")
 
@@ -1809,15 +1907,9 @@ def main():
             _info(f"Sequence gaps: {n_gaps} TER record(s) inserted at chain break(s)")
         fixed_pdb = gap_pdb
 
-        # ── Separate protein from HETATM before protonation ───────────────────
-        # pdb2pqr runs on the protein only (avoids failures on unknown ligands).
-        # The ligand is protonated separately by OpenBabel so each tool handles
-        # what it is designed for, and protonation states are never re-assigned.
-        prot_input_pdb = tmp / 'protein_only.pdb'
-        hetatm_lines, _ = _split_protein_hetatm(gap_pdb, prot_input_pdb)
-        if hetatm_lines:
-            n_het_rec = sum(1 for l in hetatm_lines if l[:6].strip() == 'HETATM')
-            _info(f"HETATM separated: {n_het_rec} record(s) — protonated separately")
+        # HETATM already separated from protein before PDBFixer repair above;
+        # gap_pdb is protein-only and ready for protonation.
+        prot_input_pdb = gap_pdb
 
         # ── Step: Protonate (protein) ──────────────────────────────────────────
         next_step(f"Protonation at pH {args.ph}")
