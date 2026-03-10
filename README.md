@@ -12,6 +12,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
   - `MCS_RMSD` — MCS-aligned RMSD vs reference ligand (RDKit, heavy atoms only)
   - `Shape_Sim` — 3D shape Tanimoto similarity vs reference ligand (RDKit)
   - `Ref_Sim` — 2D Morgan ECFP4 Tanimoto similarity vs reference ligand (RDKit)
+  - `PLIF_Sim` — Protein-Ligand Interaction Fingerprint Tanimoto similarity vs reference ligand (ODDT)
   - `PB_Flags` — [PoseBusters](https://github.com/maabuu/posebusters) failure count (`config='mol'`)
 - **Protein preparation**: Optional integrated pipeline (PDBFixer protonation + OpenMM restrained minimization) — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs
 - **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, binding site surface, reference ligand (green sticks), and docked poses
@@ -86,6 +87,7 @@ A ZIP file containing:
 | `MCS_RMSD` | MCS-aligned RMSD to reference (Å) |
 | `Shape_Sim` | 3D shape Tanimoto similarity to reference (0–1) |
 | `Ref_Sim` | 2D ECFP4 Tanimoto similarity to reference (0–1) |
+| `PLIF_Sim` | Protein-Ligand Interaction Fingerprint Tanimoto similarity to reference (0–1) |
 | `PB_Flags` | Number of failed PoseBusters checks |
 
 ## Configuration
