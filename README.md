@@ -14,7 +14,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
   - `Ref_Sim` — 2D Morgan ECFP4 Tanimoto similarity vs reference ligand (RDKit)
   - `PLIF_Sim` — Protein-Ligand Interaction Fingerprint Tanimoto similarity vs reference ligand (ODDT)
   - `PB_Flags` — [PoseBusters](https://github.com/maabuu/posebusters) failure count (`config='mol'`)
-- **Protein preparation**: Optional integrated pipeline (PDBFixer protonation + OpenMM restrained minimization) — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs
+- **Protein preparation**: Optional integrated pipeline — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs. Pipeline: PDBFixer repair → PDBFixer protonation → ASN/GLN/HIS rotamer optimisation → two-stage OpenMM minimization (stage 1: H positions optimised to convergence with all heavy atoms restrained; stage 2: sidechain relaxation with backbone-only restraints)
 - **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, binding site surface, reference ligand (green sticks), and docked poses
 - **Named sessions**: User-defined session name propagated to output SDF, PSE, and ZIP filenames
 - **DataWarrior-compatible SDF output**: Correct protonation states (COO⁻, NH₃⁺), proper block formatting, DockingRank field
@@ -52,10 +52,44 @@ export OPENMMDL_PYTHON=/path/to/envs/openmmdl/bin/python
 
 ```bash
 conda activate gnina_webapp
-uvicorn gnina_webapp:app --host 0.0.0.0 --port 8000
+python gnina_webapp.py
 ```
 
-Then open `http://localhost:8000` in your browser.
+Then open `http://localhost:9000` in your browser.
+
+### Running as a persistent service
+
+To keep the app running across sessions and restart it automatically on reboot, use a systemd service. Create `/etc/systemd/system/gnina-webapp.service`:
+
+```ini
+[Unit]
+Description=GNINA Docking Web App
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/path/to/gnina/webapp
+ExecStart=/path/to/conda/envs/gnina_webapp/bin/python gnina_webapp.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable and start it:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable gnina-webapp
+sudo systemctl start gnina-webapp
+sudo systemctl status gnina-webapp   # check it's running
+```
+
+Logs are accessible via:
+```bash
+journalctl -u gnina-webapp -f
+```
 
 ### Inputs
 | Field | Description |
