@@ -1040,6 +1040,18 @@ def _split_protein_hetatm(
     return hetatm_lines, hetatm_heavy
 
 
+def _append_hetatm_to_pdb(pdb_path: Path, hetatm_lines: List[str]) -> None:
+    """Append HETATM records to a PDB file, inserting before the END record."""
+    lines = pdb_path.read_text().splitlines(keepends=True)
+    insert_idx = len(lines)
+    for i, line in enumerate(lines):
+        if line.startswith('END'):
+            insert_idx = i
+            break
+    lines = lines[:insert_idx] + hetatm_lines + lines[insert_idx:]
+    pdb_path.write_text(''.join(lines))
+
+
 def _add_ligand_wall_forces(system, topology, hetatm_heavy: List[dict]) -> int:
     """Add one CustomExternalForce per HETATM heavy atom.
 
@@ -1754,6 +1766,11 @@ Examples:
     struct.add_argument('--keep-het', nargs='+', metavar='RESNAME', default=[],
                         help='HETATM residue names to retain, e.g. HEM ZN MG '
                              '(waters are always removed)')
+    struct.add_argument('--cofactor', nargs='+', metavar='RESNAME', default=[],
+                        help='HETATM residue names to keep in the receptor PDB '
+                             '(e.g. HEM ZN FAD); unlike --keep-het these are '
+                             'appended back to the prepared receptor rather than '
+                             'extracted as the reference ligand SDF')
 
     prot = p.add_argument_group('Protonation')
     prot.add_argument('--ph', type=float, default=7.4, metavar='FLOAT',
@@ -1844,6 +1861,7 @@ def main():
         _info(f"Assembly:      {args.assembly} (biological)")
     _info(f"Chain(s):      {', '.join(args.chain) if args.chain else 'all'}")
     _info(f"Keep HETATM:   {', '.join(args.keep_het) if args.keep_het else 'none'}")
+    _info(f"Cofactors:     {', '.join(args.cofactor) if args.cofactor else 'none'}")
     _info(f"pH:            {args.ph}")
     _info(f"Protonation:   {prot_method}")
     _info(f"Fix missing:   {'no' if args.skip_fix else 'yes'}")
@@ -1894,7 +1912,8 @@ def main():
         next_step("Cleaning structure")
         clean_pdb = tmp / 'clean.pdb'
         info = step_clean(input_pdb, clean_pdb,
-                          chains=args.chain, keep_het=args.keep_het)
+                          chains=args.chain,
+                          keep_het=(args.keep_het or []) + (args.cofactor or []))
         stats['info'] = info
         if args.keep_intermediates:
             dst = prepared_pdb.with_name(stem + '_s1_clean.pdb')
@@ -1909,6 +1928,19 @@ def main():
         # Splitting here preserves them unchanged for OpenBabel protonation.
         prot_for_fix_pdb = tmp / 'protein_for_fix.pdb'
         hetatm_lines, _ = _split_protein_hetatm(clean_pdb, prot_for_fix_pdb)
+        # Separate cofactor HETATM (kept in receptor) from reference ligand HETATM
+        cofactor_resnames = {r.strip().upper() for r in (args.cofactor or [])}
+        if cofactor_resnames and hetatm_lines:
+            cofactor_hetatm_lines = [l for l in hetatm_lines
+                                     if l[17:20].strip().upper() in cofactor_resnames]
+            hetatm_lines = [l for l in hetatm_lines
+                            if l[17:20].strip().upper() not in cofactor_resnames]
+            if cofactor_hetatm_lines:
+                n_cof = sum(1 for l in cofactor_hetatm_lines if l[:6].strip() == 'HETATM')
+                _info(f"Cofactor HETATM kept in receptor: {n_cof} record(s) "
+                      f"({', '.join(sorted(cofactor_resnames))})")
+        else:
+            cofactor_hetatm_lines: List[str] = []
         if hetatm_lines:
             n_het_rec = sum(1 for l in hetatm_lines if l[:6].strip() == 'HETATM')
             _info(f"HETATM separated: {n_het_rec} record(s) — protonated separately")
@@ -2008,6 +2040,26 @@ def main():
                 stats['ligand_sdf'] = str(lig_sdf)
             else:
                 _warn("Ligand SDF not written; wall forces use raw coordinates")
+        # Add cofactor heavy-atom positions to wall forces so the binding pocket
+        # geometry is also preserved around cofactors during minimization.
+        if cofactor_hetatm_lines:
+            for line in cofactor_hetatm_lines:
+                if line[:6].strip() != 'HETATM':
+                    continue
+                try:
+                    x = float(line[30:38]) / 10.0
+                    y = float(line[38:46]) / 10.0
+                    z = float(line[46:54]) / 10.0
+                    raw_elem = line[76:78].strip() if len(line) > 76 else ''
+                    if not raw_elem:
+                        raw_elem = ''.join(c for c in line[12:16].strip()
+                                           if c.isalpha())[:2]
+                    element = raw_elem.upper()
+                    if element and element[0] != 'H':
+                        hetatm_heavy_for_walls.append({'pos': (x, y, z),
+                                                       'element': element})
+                except (ValueError, IndexError):
+                    pass
 
         # ── Step: Flip ASN/GLN/HIS rotamers ───────────────────────────────────
         if not args.no_flip:
@@ -2024,6 +2076,8 @@ def main():
         shutil.copy(prot_pdb, prepared_pdb)
         if not args.amber_his:
             _rename_his_to_his(prepared_pdb)
+        if cofactor_hetatm_lines:
+            _append_hetatm_to_pdb(prepared_pdb, cofactor_hetatm_lines)
         _ok(f"Prepared protein  →  {prepared_pdb.name}")
 
         # Clash check (optional)
@@ -2047,6 +2101,8 @@ def main():
                                hetatm_heavy=hetatm_heavy_for_walls,
                                has_hydrogens=True)
             if ok:
+                if cofactor_hetatm_lines:
+                    _append_hetatm_to_pdb(minimized_pdb, cofactor_hetatm_lines)
                 _ok(f"Minimization done  →  {minimized_pdb.name}")
                 if args.amber_his:
                     # Re-normalise HIS → HID/HIE/HIP for AMBER-compatible output.

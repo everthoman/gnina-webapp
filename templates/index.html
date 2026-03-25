@@ -669,14 +669,23 @@
 
                 <div id="ppHetSection" style="display:none">
                     <label style="font-size:0.875rem; font-weight:500; margin-bottom:0.5rem; display:block;">
-                        Select reference ligand (HETATM group to keep)
+                        HETATM groups
+                        <span style="color:var(--text-muted); font-weight:400;">— choose role for each</span>
                     </label>
                     <table class="het-table">
                         <thead>
-                            <tr><th></th><th>Residue</th><th>Location(s)</th></tr>
+                            <tr>
+                                <th>Residue</th>
+                                <th>Location(s)</th>
+                                <th title="Defines binding site (autobox); extracted as reference ligand SDF">Reference</th>
+                                <th title="Kept in receptor PDB (e.g. cofactor, metal ion)">Cofactor</th>
+                            </tr>
                         </thead>
                         <tbody id="ppHetTableBody"></tbody>
                     </table>
+                    <div style="font-size:0.78rem; color:var(--text-muted); margin-top:0.4rem;">
+                        Rows with neither option checked are removed from the structure.
+                    </div>
                 </div>
 
                 <div id="ppNoHetMsg" style="display:none; color:var(--warning); font-size:0.85rem; margin:0.5rem 0;">
@@ -947,9 +956,10 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                         const locs = ppHetGroups[name].join(', ');
                         const tr = document.createElement('tr');
                         tr.innerHTML = `
-                            <td><input type="radio" name="ppHet" value="${name}" ${i === 0 ? 'checked' : ''}></td>
                             <td style="font-family:monospace; font-weight:600;">${name}</td>
-                            <td style="color:var(--text-muted);">${locs}</td>`;
+                            <td style="color:var(--text-muted);">${locs}</td>
+                            <td style="text-align:center;"><input type="radio" name="ppHet" value="${name}" ${i === 0 ? 'checked' : ''} onchange="ppHandleHetChange(this)"></td>
+                            <td style="text-align:center;"><input type="checkbox" name="ppCofactor" value="${name}" onchange="ppHandleCofactorChange(this)"></td>`;
                         tbody.appendChild(tr);
                     });
                     document.getElementById('ppHetSection').style.display = '';
@@ -970,10 +980,27 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             }
         }
 
+        function ppHandleHetChange(radio) {
+            // Uncheck cofactor checkbox for the selected reference ligand row
+            const row = radio.closest('tr');
+            const cb = row.querySelector('input[name="ppCofactor"]');
+            if (cb) cb.checked = false;
+        }
+
+        function ppHandleCofactorChange(checkbox) {
+            if (checkbox.checked) {
+                // Deselect reference radio if this row was selected as reference
+                const row = checkbox.closest('tr');
+                const radio = row.querySelector('input[name="ppHet"]');
+                if (radio && radio.checked) radio.checked = false;
+            }
+        }
+
         async function ppRun() {
             if (!ppToken) return;
             const selected = document.querySelector('input[name="ppHet"]:checked');
-            if (!selected) { alert('Please select a reference ligand.'); return; }
+            const cofactorBoxes = [...document.querySelectorAll('input[name="ppCofactor"]:checked')];
+            if (!selected) { alert('Please select a reference ligand (the Reference radio).'); return; }
 
             const btn = document.getElementById('ppRunBtn');
             const status = document.getElementById('ppRunStatus');
@@ -984,12 +1011,14 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             try {
                 const selectedChains = [...document.querySelectorAll('input[name="ppChain"]:checked')]
                     .map(cb => cb.value).join(' ');
+                const cofactorNames = cofactorBoxes.map(cb => cb.value).join(' ');
 
                 const fd = new FormData();
                 fd.append('token', ppToken);
                 fd.append('keep_het', selected.value);
                 fd.append('ph', document.getElementById('ppPh').value);
                 if (selectedChains) fd.append('chains', selectedChains);
+                if (cofactorNames) fd.append('cofactors', cofactorNames);
 
                 const resp = await fetch('/protprep/run', { method: 'POST', body: fd });
                 const data = await resp.json();

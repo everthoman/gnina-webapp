@@ -14,6 +14,7 @@ Features:
 import asyncio
 import base64
 import os
+import sys
 import tempfile
 import subprocess
 import shutil
@@ -46,6 +47,18 @@ import multiprocessing as mp
 
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
+
+def _sanitize_mol(mol) -> None:
+    """Sanitize an RDKit mol loaded with sanitize=False.
+
+    Full SanitizeMol can fail on GNINA output (unusual atom types, charges).
+    When it does, fall back to FastFindRings so that ring info is populated
+    and Morgan fingerprints / MCS still work.
+    """
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception:
+        Chem.FastFindRings(mol)
 
 # Configure logging — console + rotating file
 _LOG_FILE = os.path.join(os.path.dirname(__file__), 'gnina_webapp.log')
@@ -651,14 +664,43 @@ EMBEDDED_HTML = '''<!DOCTYPE html>
 </html>'''
 
 # ============================================================================
-# CONFIGURATION - Optimized for 36 CPUs + 2x RTX 5000
+# CONFIGURATION
 # ============================================================================
-N_CPU = 36
-N_GPU = 1                          # Number of GPUs to use for docking
-DOCK_GPU_ID = int(os.environ.get('DOCK_GPU_ID', '1'))  # Physical GPU index (GPU 1 = free RTX 5000)
+N_CPU = int(os.environ.get('N_CPU', os.cpu_count() or 1))
 RESERVED_CPU = 4                   # Reserve for system/web server
-WORKER_CPU = N_CPU - RESERVED_CPU  # 32 available workers
-CPU_PER_GPU = WORKER_CPU // N_GPU  # 32 cores for the single docking GPU
+WORKER_CPU = max(1, N_CPU - RESERVED_CPU)
+
+def _detect_gpu_ids() -> List[int]:
+    """Return list of CUDA device indices to use for docking.
+
+    Priority:
+    1. DOCK_GPUS env var  — comma-separated indices, e.g. "0,2"
+    2. DOCK_GPU_ID env var — legacy single-index, e.g. "1"
+    3. Auto-detect all CUDA devices via nvidia-smi
+    4. Fall back to [0] if detection fails
+    """
+    env_gpus = os.environ.get('DOCK_GPUS', '').strip()
+    if env_gpus:
+        return [int(x) for x in env_gpus.split(',') if x.strip().isdigit()]
+    env_single = os.environ.get('DOCK_GPU_ID', '').strip()
+    if env_single.isdigit():
+        return [int(env_single)]
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            ids = [int(x.strip()) for x in result.stdout.splitlines() if x.strip().isdigit()]
+            if ids:
+                return ids
+    except Exception:
+        pass
+    return [0]
+
+DOCK_GPU_IDS: List[int] = _detect_gpu_ids()
+N_GPU = len(DOCK_GPU_IDS)
+CPU_PER_GPU = max(1, WORKER_CPU // N_GPU)
 
 # Working directories
 WORK_DIR = Path("/tmp/gnina_work")
@@ -668,12 +710,12 @@ WORK_DIR.mkdir(exist_ok=True)
 GNINA_PATH = os.environ.get('GNINA_PATH', '/opt/gnina/gnina.1.3.2')
 
 # PyMOL binary for headless session generation (pymol -cq script.py)
-PYMOL_PATH = os.environ.get('PYMOL_PATH', '/home/evehom/Programs/miniconda3/envs/pymol/bin/pymol')
+PYMOL_PATH = os.environ.get('PYMOL_PATH', str(Path(sys.executable).parent / 'pymol'))
 
 # Protein preparation (protprep.py) — runs in openmmdl conda env
 OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON', '/home/evehom/Programs/miniconda3/envs/openmmdl/bin/python')
 PROTPREP_SCRIPT = os.environ.get('PROTPREP_SCRIPT', str(Path(__file__).parent / 'protprep.py'))
-SBDD_PYTHON = os.environ.get('SBDD_PYTHON', '/home/evehom/Programs/miniconda3/envs/sbdd/bin/python')
+SBDD_PYTHON = os.environ.get('SBDD_PYTHON', sys.executable)
 
 # ============================================================================
 # DATA CLASSES
@@ -1078,7 +1120,7 @@ class GninaDockingEngine:
     
     def __init__(self, gnina_path: str = GNINA_PATH):
         self.gnina_path = gnina_path
-        self.gpu_semaphores = [asyncio.Semaphore(1) for _ in range(N_GPU)]
+        self.gpu_semaphores = {gpu_id: asyncio.Semaphore(1) for gpu_id in DOCK_GPU_IDS}
         self._verify_gnina()
     
     def _verify_gnina(self):
@@ -1149,7 +1191,7 @@ class GninaDockingEngine:
         env = os.environ.copy()
         env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
 
-        async with self.gpu_semaphores[gpu_id % len(self.gpu_semaphores)]:
+        async with self.gpu_semaphores[gpu_id]:
             logger.info(f"Starting docking on GPU {gpu_id}: {os.path.basename(ligand_path)}")
             logger.info(f"GNINA command: CUDA_VISIBLE_DEVICES={gpu_id} {' '.join(cmd)}")
 
@@ -1348,7 +1390,7 @@ class DockingJobProcessor:
 
         Returns path to the .pse file, or None on failure.
         """
-        PYMOL_EXE = '/home/evehom/Programs/miniconda3/envs/pymol/bin/pymol'
+        PYMOL_EXE = PYMOL_PATH
 
         def _pymol_name(name: str) -> str:
             """Make a valid PyMOL object name."""
@@ -1510,7 +1552,7 @@ cmd.quit()
         output_files = []
         
         for i in range(num_gpus_to_use):
-            gpu_id = DOCK_GPU_ID + i
+            gpu_id = DOCK_GPU_IDS[i]
             start_idx = i * mols_per_gpu
             end_idx = min(start_idx + mols_per_gpu, total_mols)
             
@@ -1553,7 +1595,7 @@ cmd.quit()
         
         # Check for errors
         for i, result in enumerate(results):
-            physical_gpu = DOCK_GPU_ID + i
+            physical_gpu = DOCK_GPU_IDS[i]
             if isinstance(result, Exception):
                 logger.error(f"GPU {physical_gpu} task failed: {result}")
             elif not result[0]:
@@ -1774,10 +1816,7 @@ cmd.quit()
         if ref_mol is None:
             logger.error("add_mcs_rmsd: could not load reference ligand from %s", reference_path)
             return 0
-        try:
-            Chem.SanitizeMol(ref_mol)
-        except Exception:
-            pass
+        _sanitize_mol(ref_mol)
 
         with open(sdf_path, 'r') as f:
             content = f.read()
@@ -1791,10 +1830,7 @@ cmd.quit()
                 pose_mol = Chem.MolFromMolBlock(block.strip(), removeHs=True, sanitize=False)
                 if pose_mol is None or pose_mol.GetNumAtoms() == 0:
                     raise ValueError("empty mol")
-                try:
-                    Chem.SanitizeMol(pose_mol)
-                except Exception:
-                    pass
+                _sanitize_mol(pose_mol)
 
                 mcs_result = rdFMCS.FindMCS(
                     [ref_mol, pose_mol],
@@ -1860,10 +1896,7 @@ cmd.quit()
         if ref_mol is None:
             logger.error("add_shape_sim: could not load reference ligand from %s", reference_path)
             return 0
-        try:
-            Chem.SanitizeMol(ref_mol)
-        except Exception:
-            pass
+        _sanitize_mol(ref_mol)
         if not ref_mol.GetNumConformers():
             logger.error("add_shape_sim: reference ligand has no 3D conformer")
             return 0
@@ -1882,10 +1915,7 @@ cmd.quit()
                     raise ValueError("empty mol")
                 if not pose_mol.GetNumConformers():
                     raise ValueError("no conformer")
-                try:
-                    Chem.SanitizeMol(pose_mol)
-                except Exception:
-                    pass
+                _sanitize_mol(pose_mol)
 
                 dist = rdShapeHelpers.ShapeTanimotoDist(ref_mol, pose_mol)
                 sim = round(1.0 - dist, 4)
@@ -1921,10 +1951,7 @@ cmd.quit()
         if ref_mol is None:
             logger.error("add_ref_sim: could not load reference ligand from %s", reference_path)
             return 0
-        try:
-            Chem.SanitizeMol(ref_mol)
-        except Exception:
-            pass
+        _sanitize_mol(ref_mol)
         ref_fp = AllChem.GetMorganFingerprintAsBitVect(ref_mol, radius=2, nBits=2048)
 
         with open(sdf_path, 'r') as f:
@@ -1939,10 +1966,7 @@ cmd.quit()
                 pose_mol = Chem.MolFromMolBlock(block.strip(), removeHs=True, sanitize=False)
                 if pose_mol is None or pose_mol.GetNumAtoms() == 0:
                     raise ValueError("empty mol")
-                try:
-                    Chem.SanitizeMol(pose_mol)
-                except Exception:
-                    pass
+                _sanitize_mol(pose_mol)
                 pose_fp = AllChem.GetMorganFingerprintAsBitVect(pose_mol, radius=2, nBits=2048)
                 sim = DataStructs.TanimotoSimilarity(ref_fp, pose_fp)
                 sim_str = f'{sim:.4f}'
@@ -2068,6 +2092,9 @@ cmd.quit()
                 return 0
         except asyncio.TimeoutError:
             logger.error("add_plif_sim: timed out")
+            return 0
+        except FileNotFoundError:
+            logger.warning("add_plif_sim: SBDD_PYTHON not found (%s) — skipping PLIF_Sim", SBDD_PYTHON)
             return 0
 
         similarities = json.loads(out_json.read_text())
@@ -2305,7 +2332,9 @@ def generate_pymol_session(
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info(f"Starting GNINA Docking Server")
-    logger.info(f"Configuration: {N_CPU} CPUs, {N_GPU} GPUs, {WORKER_CPU} workers")
+    logger.info(f"Configuration: {N_CPU} CPUs, {N_GPU} GPU(s) {DOCK_GPU_IDS}, {CPU_PER_GPU} CPU/GPU, {WORKER_CPU} workers")
+    if not os.path.exists(SBDD_PYTHON):
+        logger.warning(f"SBDD_PYTHON not found ({SBDD_PYTHON}) — PLIF_Sim annotation will be skipped")
     yield
     logger.info("Shutting down...")
 
@@ -2908,7 +2937,8 @@ async def protprep_run(
     token: str = Form(...),
     keep_het: str = Form(...),
     ph: float = Form(7.4),
-    chains: Optional[str] = Form(None),   # space-separated, blank = all
+    chains: Optional[str] = Form(None),    # space-separated, blank = all
+    cofactors: Optional[str] = Form(None), # space-separated resnames to keep in receptor
 ):
     """
     Step 2: Run the full protein preparation pipeline and return
@@ -2936,6 +2966,8 @@ async def protprep_run(
     ]
     if chains and chains.strip():
         cmd += ["--chain"] + chains.split()
+    if cofactors and cofactors.strip():
+        cmd += ["--cofactor"] + cofactors.split()
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -2971,7 +3003,7 @@ async def protprep_run(
 if __name__ == "__main__":
     uvicorn.run(
         "gnina_webapp:app",
-        host="130.237.250.75",
+        host="172.21.65.193",
         port=9000,
         workers=1,  # Single worker for shared state
         reload=False,

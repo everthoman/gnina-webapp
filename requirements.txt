@@ -1,5 +1,8 @@
 # GNINA Docking Web Application Dependencies
-# Install with: pip install -r requirements.txt
+#
+# Recommended install via conda + pip:
+#   conda install -c conda-forge rdkit openbabel oddt scipy scikit-learn numpy pymol-open-source
+#   pip install -r requirements.txt
 
 # Web framework
 fastapi>=0.109.0
@@ -7,11 +10,23 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 aiofiles>=23.2.1
 
-# Chemistry
-rdkit>=2023.9.1
+# Chemistry — prefer conda for rdkit/openbabel (binary deps)
+# rdkit>=2023.9.1
+# openbabel (via conda: conda-forge::openbabel)
 
-# Note: RDKit and OpenBabel are best installed via conda:
-# conda install -c conda-forge rdkit openbabel
+# PLIF similarity (ODDT + deps)
+# oddt>=0.7            (conda-forge::oddt — requires openbabel or rdkit toolkit)
+# scipy>=1.10.0        (conda-forge::scipy)
+# scikit-learn>=1.3.0  (conda-forge::scikit-learn)
+
+# Pose validation
+posebusters>=0.2.0
+
+# Numerics
+numpy>=1.24.0
+
+# Visualization (optional — headless PyMOL session generation)
+# pymol-open-source (via conda: conda-forge::pymol-open-source)
 
 # For production deployment (optional)
 gunicorn>=21.2.0
