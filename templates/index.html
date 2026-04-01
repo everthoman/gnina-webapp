@@ -954,9 +954,11 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 if (hetNames.length > 0) {
                     hetNames.forEach((name, i) => {
                         const locs = ppHetGroups[name].join(', ');
+                        // name is "RESNAME/CHAIN:RESNUM"; show only the resname part
+                        const displayName = name.includes('/') ? name.split('/')[0] : name;
                         const tr = document.createElement('tr');
                         tr.innerHTML = `
-                            <td style="font-family:monospace; font-weight:600;">${name}</td>
+                            <td style="font-family:monospace; font-weight:600;">${displayName}</td>
                             <td style="color:var(--text-muted);">${locs}</td>
                             <td style="text-align:center;"><input type="radio" name="ppHet" value="${name}" ${i === 0 ? 'checked' : ''} onchange="ppHandleHetChange(this)"></td>
                             <td style="text-align:center;"><input type="checkbox" name="ppCofactor" value="${name}" onchange="ppHandleCofactorChange(this)"></td>`;

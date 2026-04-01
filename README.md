@@ -94,7 +94,7 @@ journalctl -u gnina-webapp -f
 ### Inputs
 | Field | Description |
 |---|---|
-| Protein Preparation | Optional: upload or fetch PDB, select chains/reference ligand, runs PDBFixer + OpenMM minimization, auto-fills receptor and reference inputs |
+| Protein Preparation | Optional: upload or fetch PDB, select chains/reference ligand/cofactors, runs PDBFixer + OpenMM minimization, auto-fills receptor and reference inputs. Ligands and cofactors are identified by instance (`RESNAME/CHAIN:RESNUM`), so duplicate residue names in different chains are handled correctly. |
 | Receptor (PDB) | Protein structure for docking |
 | Reference ligand (SDF) | Defines the binding site (autobox); used as reference for post-processing metrics |
 | Ligands (SDF or SMILES) | Molecules to dock |

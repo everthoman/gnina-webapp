@@ -246,7 +246,22 @@ class _ChainSelector(Select):
 
     def __init__(self, chains=None, keep_resnames=None, structure=None):
         self.chains = set(chains) if chains else None
-        self.keep_res = {r.strip().upper() for r in (keep_resnames or [])}
+        self.keep_res: set = set()
+        self.keep_res_instances: set = set()   # (resname, chain_id, seqid) tuples
+        for r in (keep_resnames or []):
+            r = r.strip().upper()
+            if '/' in r:
+                resname, loc = r.split('/', 1)
+                if ':' in loc:
+                    ch, resnum_str = loc.split(':', 1)
+                    try:
+                        self.keep_res_instances.add((resname, ch, int(resnum_str)))
+                        continue
+                    except ValueError:
+                        pass
+                self.keep_res.add(resname)
+            else:
+                self.keep_res.add(r)
         # Chains that contain a keep_res residue — accepted even when not in
         # the user-selected chain list (handles ligand-only chains, e.g. K8Q
         # living in chains F–J while the user keeps only chain A).
@@ -255,7 +270,7 @@ class _ChainSelector(Select):
         self._atom_altlocs: Dict[tuple, set] = {}
         if structure is not None:
             self._scan_altlocs(structure)
-            if self.chains is not None and self.keep_res:
+            if self.chains is not None and (self.keep_res or self.keep_res_instances):
                 self._scan_keep_res_chains(structure)
 
     def _scan_altlocs(self, structure):
@@ -275,9 +290,13 @@ class _ChainSelector(Select):
         """Pre-scan: find which chains contain any keep_res residue."""
         for model in structure:
             for chain in model:
+                cid = chain.get_id()
                 for residue in chain:
-                    if residue.get_resname().strip().upper() in self.keep_res:
-                        self._keep_res_chains.add(chain.get_id())
+                    resname = residue.get_resname().strip().upper()
+                    seqid = residue.get_id()[1]
+                    if (resname in self.keep_res or
+                            (resname, cid, seqid) in self.keep_res_instances):
+                        self._keep_res_chains.add(cid)
 
     def accept_chain(self, chain):
         if self.chains is None:
@@ -285,10 +304,14 @@ class _ChainSelector(Select):
         return chain.get_id() in self.chains or chain.get_id() in self._keep_res_chains
 
     def accept_residue(self, residue):
-        hetflag, _, _ = residue.get_id()
+        hetflag, seqid, _ = residue.get_id()
         if hetflag == ' ':   return True
         if hetflag == 'W':   return False
-        return residue.get_resname().strip().upper() in self.keep_res
+        resname = residue.get_resname().strip().upper()
+        if resname in self.keep_res:
+            return True
+        chain_id = residue.get_parent().get_id()
+        return (resname, chain_id, seqid) in self.keep_res_instances
 
     def accept_atom(self, atom):
         altloc = atom.get_altloc()
@@ -365,7 +388,8 @@ def _inspect(pdb_path: Path) -> dict:
         name = r.get_resname().strip()
         ch   = r.get_parent().get_id()
         seqid = r.get_id()[1]
-        het_groups.setdefault(name, []).append(f"{ch}:{seqid}")
+        key = f"{name}/{ch}:{seqid}"
+        het_groups.setdefault(key, []).append(f"{ch}:{seqid}")
 
     return {
         'chains':       [c.get_id() for c in chains],
@@ -1929,16 +1953,44 @@ def main():
         prot_for_fix_pdb = tmp / 'protein_for_fix.pdb'
         hetatm_lines, _ = _split_protein_hetatm(clean_pdb, prot_for_fix_pdb)
         # Separate cofactor HETATM (kept in receptor) from reference ligand HETATM
-        cofactor_resnames = {r.strip().upper() for r in (args.cofactor or [])}
-        if cofactor_resnames and hetatm_lines:
-            cofactor_hetatm_lines = [l for l in hetatm_lines
-                                     if l[17:20].strip().upper() in cofactor_resnames]
-            hetatm_lines = [l for l in hetatm_lines
-                            if l[17:20].strip().upper() not in cofactor_resnames]
+        # Supports both plain resname ("ZN") and instance-specific ("LIG/A:201") specs.
+        _cof_resnames: set = set()
+        _cof_instances: set = set()   # (resname, chain_id, seqid) tuples
+        for spec in (args.cofactor or []):
+            spec = spec.strip().upper()
+            if '/' in spec:
+                resname, loc = spec.split('/', 1)
+                if ':' in loc:
+                    ch, resnum_str = loc.split(':', 1)
+                    try:
+                        _cof_instances.add((resname, ch, int(resnum_str)))
+                        continue
+                    except ValueError:
+                        pass
+                _cof_resnames.add(resname)
+            else:
+                _cof_resnames.add(spec)
+
+        def _is_cofactor_line(l: str) -> bool:
+            resname = l[17:20].strip().upper()
+            if resname in _cof_resnames:
+                return True
+            chain_id = l[21] if len(l) > 21 else '?'
+            try:
+                seqid = int(l[22:26].strip())
+            except (ValueError, IndexError):
+                return False
+            return (resname, chain_id, seqid) in _cof_instances
+
+        if (_cof_resnames or _cof_instances) and hetatm_lines:
+            cofactor_hetatm_lines = [l for l in hetatm_lines if _is_cofactor_line(l)]
+            hetatm_lines = [l for l in hetatm_lines if not _is_cofactor_line(l)]
             if cofactor_hetatm_lines:
                 n_cof = sum(1 for l in cofactor_hetatm_lines if l[:6].strip() == 'HETATM')
+                cof_labels = sorted(_cof_resnames) + [
+                    f"{rn}/{ch}:{si}" for rn, ch, si in sorted(_cof_instances)]
                 _info(f"Cofactor HETATM kept in receptor: {n_cof} record(s) "
-                      f"({', '.join(sorted(cofactor_resnames))})")
+                      f"({', '.join(cof_labels)})")
         else:
             cofactor_hetatm_lines: List[str] = []
         if hetatm_lines:
