@@ -715,7 +715,6 @@ PYMOL_PATH = os.environ.get('PYMOL_PATH', str(Path(sys.executable).parent / 'pym
 # Protein preparation (protprep.py) — runs in openmmdl conda env
 OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON', '/home/evehom/Programs/miniconda3/envs/openmmdl/bin/python')
 PROTPREP_SCRIPT = os.environ.get('PROTPREP_SCRIPT', str(Path(__file__).parent / 'protprep.py'))
-SBDD_PYTHON = os.environ.get('SBDD_PYTHON', sys.executable)
 
 # ============================================================================
 # DATA CLASSES
@@ -2082,7 +2081,7 @@ cmd.quit()
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                SBDD_PYTHON, str(script_path),
+                sys.executable, str(script_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -2092,9 +2091,6 @@ cmd.quit()
                 return 0
         except asyncio.TimeoutError:
             logger.error("add_plif_sim: timed out")
-            return 0
-        except FileNotFoundError:
-            logger.warning("add_plif_sim: SBDD_PYTHON not found (%s) — skipping PLIF_Sim", SBDD_PYTHON)
             return 0
 
         similarities = json.loads(out_json.read_text())
@@ -2333,8 +2329,6 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info(f"Starting GNINA Docking Server")
     logger.info(f"Configuration: {N_CPU} CPUs, {N_GPU} GPU(s) {DOCK_GPU_IDS}, {CPU_PER_GPU} CPU/GPU, {WORKER_CPU} workers")
-    if not os.path.exists(SBDD_PYTHON):
-        logger.warning(f"SBDD_PYTHON not found ({SBDD_PYTHON}) — PLIF_Sim annotation will be skipped")
     yield
     logger.info("Shutting down...")
 

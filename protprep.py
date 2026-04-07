@@ -1546,29 +1546,18 @@ def step_minimize(protein_pdb: Path, output_pdb: Path, ph: float,
         n_walls = _add_ligand_wall_forces(system, modeller.topology, hetatm_heavy)
         _info(f"Ligand wall forces added: {n_walls}")
 
-    # ── Positional restraints on protein heavy atoms ─────────────────────────
-    restraint = openmm.CustomExternalForce(
-        '0.5 * k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)'
-    )
-    restraint.addGlobalParameter('k', restraint_k)
-    restraint.addPerParticleParameter('x0')
-    restraint.addPerParticleParameter('y0')
-    restraint.addPerParticleParameter('z0')
-
+    # ── Freeze all heavy atoms (zero mass = immovable) ───────────────────────
+    # Restraint springs can't hold charged groups against vacuum Coulomb forces
+    # (hundreds of kJ/mol/nm). Setting mass=0 freezes atoms completely so only
+    # H positions are optimised.
     positions = modeller.positions
-    n_restrained = 0
+    n_frozen = 0
     for atom in modeller.topology.atoms():
         if atom.element is None or atom.element.symbol == 'H':
             continue
-        if restrain_sidechains or atom.name in _BACKBONE_ATOMS:
-            pos = positions[atom.index].value_in_unit(unit.nanometers)
-            restraint.addParticle(atom.index, pos)
-            n_restrained += 1
-    system.addForce(restraint)
-    restrain_label = ("all heavy atoms" if restrain_sidechains
-                      else "backbone atoms (N,CA,C,O)")
-    _info(f"{restrain_label} restrained: {n_restrained}  "
-          f"(k = {restraint_k:.0f} kJ/mol/nm²)")
+        system.setParticleMass(atom.index, 0)
+        n_frozen += 1
+    _info(f"Heavy atoms frozen: {n_frozen}")
 
     integrator = openmm.LangevinMiddleIntegrator(
         300 * unit.kelvin, 1 / unit.picosecond, 0.004 * unit.picoseconds
@@ -1581,64 +1570,23 @@ def step_minimize(protein_pdb: Path, output_pdb: Path, ph: float,
                     .value_in_unit(unit.kilocalories_per_mole))
     _info(f"Energy before: {e_before:>12.1f} kcal/mol")
 
-    # ── Stage 1: hydrogen optimisation (all heavy atoms restrained) ───────────
-    # Run to convergence regardless of max_iter so every aromatic / sp2
+    # ── Hydrogen optimisation (heavy atoms frozen) ────────────────────────────
+    # Run to convergence so every aromatic / sp2
     # hydrogen settles into its ideal in-plane geometry.
-    _info("Stage 1: optimising H positions to convergence …")
-    _tol = 2.0 * unit.kilojoule_per_mole / unit.nanometer
+    _info("Optimising H positions to convergence (heavy atoms frozen) …")
+    _tol = 0.5 * unit.kilojoule_per_mole / unit.nanometer
     sim.minimizeEnergy(maxIterations=0, tolerance=_tol)
 
     e_s1 = (sim.context.getState(getEnergy=True)
                 .getPotentialEnergy()
                 .value_in_unit(unit.kilocalories_per_mole))
-    _info(f"Energy stage 1:{e_s1:>12.1f} kcal/mol  (Δ = {e_s1 - e_before:+.1f})")
+    _info(f"Energy after:  {e_s1:>12.1f} kcal/mol  (Δ = {e_s1 - e_before:+.1f})")
 
-    # ── Stage 2: sidechain relaxation (backbone-only restraints) ─────────────
-    # Rebuild the system with weaker, backbone-only positional restraints so
-    # sidechains and their hydrogens can adopt better rotamers while the
-    # backbone stays close to the experimental coordinates.
-    _info("Stage 2: sidechain relaxation (backbone restrained, "
-          f"k = {restraint_k / 5:.0f} kJ/mol/nm²) …")
-    pos_s1 = sim.context.getState(getPositions=True).getPositions()
-
-    system2 = ff_obj.createSystem(modeller.topology,
-                                  nonbondedMethod=omm_app.NoCutoff)
-    if hetatm_heavy:
-        _add_ligand_wall_forces(system2, modeller.topology, hetatm_heavy)
-
-    restraint2 = openmm.CustomExternalForce(
-        '0.5 * k * ((x - x0)^2 + (y - y0)^2 + (z - z0)^2)'
-    )
-    restraint2.addGlobalParameter('k', restraint_k / 5)
-    restraint2.addPerParticleParameter('x0')
-    restraint2.addPerParticleParameter('y0')
-    restraint2.addPerParticleParameter('z0')
-
-    n_bb = 0
-    for atom in modeller.topology.atoms():
-        if atom.element is None or atom.element.symbol == 'H':
-            continue
-        if atom.name in _BACKBONE_ATOMS:
-            pos = pos_s1[atom.index].value_in_unit(unit.nanometers)
-            restraint2.addParticle(atom.index, pos)
-            n_bb += 1
-    system2.addForce(restraint2)
-    _info(f"Backbone atoms restrained: {n_bb}")
-
-    integrator2 = openmm.LangevinMiddleIntegrator(
-        300 * unit.kelvin, 1 / unit.picosecond, 0.004 * unit.picoseconds
-    )
-    sim2 = omm_app.Simulation(modeller.topology, system2, integrator2)
-    sim2.context.setPositions(pos_s1)
-    sim2.minimizeEnergy(maxIterations=max_iter, tolerance=_tol)
-
-    state = sim2.context.getState(getPositions=True, getEnergy=True)
-    e_s2 = state.getPotentialEnergy().value_in_unit(unit.kilocalories_per_mole)
-    _info(f"Energy stage 2:{e_s2:>12.1f} kcal/mol  (Δ = {e_s2 - e_s1:+.1f})")
+    state = sim.context.getState(getPositions=True, getEnergy=True)
 
     # ── Write protein-only output (ligand lives in its separate SDF) ─────────
     buf = _io.StringIO()
-    omm_app.PDBFile.writeFile(sim2.topology, state.getPositions(), buf, keepIds=True)
+    omm_app.PDBFile.writeFile(sim.topology, state.getPositions(), buf, keepIds=True)
     output_pdb.write_text(buf.getvalue())
     return True
 
