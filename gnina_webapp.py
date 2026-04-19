@@ -713,7 +713,23 @@ GNINA_PATH = os.environ.get('GNINA_PATH', '/opt/gnina/gnina.1.3.2')
 PYMOL_PATH = os.environ.get('PYMOL_PATH', str(Path(sys.executable).parent / 'pymol'))
 
 # Protein preparation (protprep.py) — runs in openmmdl conda env
-OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON', '/home/evehom/Programs/miniconda3/envs/openmmdl/bin/python')
+def _find_openmmdl_python() -> str:
+    """Locate the openmmdl conda env python, falling back to sys.executable."""
+    import shutil, subprocess
+    if (p := shutil.which("conda")):
+        try:
+            result = subprocess.run(
+                [p, "run", "-n", "openmmdl", "python", "-c", "import sys; print(sys.executable)"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and (exe := result.stdout.strip()):
+                return exe
+        except Exception:
+            pass
+    import sys
+    return sys.executable
+
+OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON') or _find_openmmdl_python()
 PROTPREP_SCRIPT = os.environ.get('PROTPREP_SCRIPT', str(Path(__file__).parent / 'protprep.py'))
 
 # ============================================================================
@@ -1454,21 +1470,24 @@ ligand_objs = [{ligand_obj_list}]
 for obj in ligand_objs:
     cmd.hide('sticks', obj + ' and hydro and (neighbor (elem C))')
 
-# --- Binding-site atoms within 5 Å of any docked pose: lines + polar H shown ---
+# --- Binding-site residues within 5 Å of any docked pose: lines + labels ---
 all_ligands_sel = ' or '.join(ligand_objs) if ligand_objs else 'none'
-cmd.select('binding_site', f'protein within 5 of ({{all_ligands_sel}})')
-cmd.show('lines', 'binding_site')
-cmd.hide('lines', 'binding_site and hydro and (neighbor (elem C))')
+cmd.select('pocket_atoms', f'protein within 5 of ({{all_ligands_sel}})')
+cmd.select('pocket_residues', f'byres pocket_atoms')
+cmd.show('lines', 'pocket_residues')
+cmd.hide('lines', 'pocket_residues and hydro and (neighbor (elem C))')
+cmd.label('pocket_residues and name CA', '"%s%s" % (resn, resi)')
 
-# Transparent light-grey surface on binding-site atoms only
-cmd.show('surface', 'binding_site')
+# Transparent light-grey surface on atoms within 5 Å only
+cmd.show('surface', 'pocket_atoms')
 cmd.set('surface_color', 'grey90', 'protein')
 cmd.set('transparency', 0.5, 'protein')
 
 cmd.deselect()
 cmd.orient(all_ligands_sel if ligand_objs else 'protein')
-cmd.zoom('binding_site', 5)
-cmd.delete('binding_site')
+cmd.zoom('pocket_residues', 5)
+cmd.delete('pocket_atoms')
+cmd.delete('pocket_residues')
 cmd.save(r'{pse_path}')
 cmd.quit()
 """

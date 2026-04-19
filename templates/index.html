@@ -946,6 +946,9 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                     label.innerHTML = `<input type="checkbox" name="ppChain" value="${c}" checked> ${c} <span style="color:var(--text-muted);">(${data.chain_info[c]} res)</span>`;
                     chainBox.appendChild(label);
                 });
+                chainBox.querySelectorAll('input[name="ppChain"]').forEach(cb => {
+                    cb.addEventListener('change', ppFilterHetByChain);
+                });
 
                 // HETATM table
                 const tbody = document.getElementById('ppHetTableBody');
@@ -956,7 +959,9 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                         const locs = ppHetGroups[name].join(', ');
                         // name is "RESNAME/CHAIN:RESNUM"; show only the resname part
                         const displayName = name.includes('/') ? name.split('/')[0] : name;
+                        const hetChain = name.includes('/') ? name.split('/')[1].split(':')[0] : '';
                         const tr = document.createElement('tr');
+                        tr.dataset.chain = hetChain;
                         tr.innerHTML = `
                             <td style="font-family:monospace; font-weight:600;">${displayName}</td>
                             <td style="color:var(--text-muted);">${locs}</td>
@@ -980,6 +985,23 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             } finally {
                 btn.disabled = false;
             }
+        }
+
+        function ppFilterHetByChain() {
+            const checkedChains = new Set(
+                [...document.querySelectorAll('input[name="ppChain"]:checked')].map(cb => cb.value)
+            );
+            document.querySelectorAll('#ppHetTableBody tr').forEach(tr => {
+                const chain = tr.dataset.chain;
+                const hide = chain && !checkedChains.has(chain);
+                tr.style.display = hide ? 'none' : '';
+                if (hide) {
+                    const radio = tr.querySelector('input[name="ppHet"]');
+                    const cofactor = tr.querySelector('input[name="ppCofactor"]');
+                    if (radio) radio.checked = false;
+                    if (cofactor) cofactor.checked = false;
+                }
+            });
         }
 
         function ppHandleHetChange(radio) {
