@@ -14,8 +14,8 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
   - `Ref_Sim` — 2D Morgan ECFP4 Tanimoto similarity vs reference ligand (RDKit)
   - `PLIF_Sim` — Protein-Ligand Interaction Fingerprint Tanimoto similarity vs reference ligand (ODDT)
   - `PB_Flags` — [PoseBusters](https://github.com/maabuu/posebusters) failure count (`config='mol'`)
-- **Protein preparation**: Optional integrated pipeline — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs. Pipeline: PDBFixer repair → PDBFixer protonation → ASN/GLN/HIS rotamer optimisation → two-stage OpenMM minimization (stage 1: H positions optimised to convergence with all heavy atoms restrained; stage 2: sidechain relaxation with backbone-only restraints)
-- **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, binding site surface, reference ligand (green sticks), and docked poses
+- **Protein preparation**: Optional integrated pipeline — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs. Pipeline: PDBFixer repair → PDBFixer protonation → ASN/GLN/HIS rotamer optimisation → OpenMM minimization (heavy atoms frozen, H positions optimised to convergence). Unchecking a chain in the UI hides its HETATM groups automatically.
+- **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, pocket residues shown as full lines with residue labels, surface on atoms within 5 Å of poses, reference ligand (green sticks), and docked poses
 - **Named sessions**: User-defined session name propagated to output SDF, PSE, and ZIP filenames
 - **DataWarrior-compatible SDF output**: Correct protonation states (COO⁻, NH₃⁺), proper block formatting, DockingRank field
 
@@ -43,7 +43,7 @@ conda create -n openmmdl python=3.10
 conda activate openmmdl
 conda install -c conda-forge biopython pdbfixer openmm
 ```
-The protein preparation pipeline (`protprep.py`) is called as a subprocess using the `openmmdl` Python interpreter. Set the `OPENMMDL_PYTHON` environment variable if it is installed at a non-default path:
+The protein preparation pipeline (`protprep.py`) is called as a subprocess using the `openmmdl` Python interpreter. The app auto-discovers it via `conda run -n openmmdl`. Override if needed:
 ```bash
 export OPENMMDL_PYTHON=/path/to/envs/openmmdl/bin/python
 ```
