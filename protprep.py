@@ -1461,8 +1461,7 @@ def step_flip_rotamers(
 
 
 def step_minimize(protein_pdb: Path, output_pdb: Path, ph: float,
-                  max_iter: int = 1000, restraint_k: float = 1000.0,
-                  restrain_sidechains: bool = False,
+                  max_iter: int = 1000,
                   hetatm_heavy: Optional[List[dict]] = None,
                   has_hydrogens: bool = False) -> bool:
     """OpenMM restrained energy minimization.
@@ -1780,14 +1779,7 @@ Examples:
                            '(default: 2000). Stage 1 (H optimisation) always runs '
                            'to convergence. Use 0 for stage 2 to also run to '
                            'convergence.')
-    mini.add_argument('--restraint-k', type=float, default=1000.0, metavar='FLOAT',
-                      help='Positional restraint strength in kJ/mol/nm² '
-                           '(default: 1000). Higher = less movement allowed.')
-    mini.add_argument('--relax-sidechains', action='store_true',
-                      help='Only restrain backbone atoms (N,CA,C,O) during '
-                           'minimization, letting sidechains relax freely. '
-                           'Default is to restrain all heavy atoms, which '
-                           'keeps the structure close to the input coordinates.')
+
 
     pipe = p.add_argument_group('Pipeline')
     pipe.add_argument('--keep-intermediates', action='store_true',
@@ -1839,9 +1831,7 @@ def main():
     _info(f"Fix missing:   {'no' if args.skip_fix else 'yes'}")
     _info(f"Cap termini:   {'yes' if args.cap else 'no'}")
     if args.minimize:
-        restrain_str = ("backbone only" if args.relax_sidechains else "all heavy")
-        _info(f"Minimize:      yes  (k = {args.restraint_k:.0f} kJ/mol/nm², "
-              f"max_iter = {args.max_iter}, restrain = {restrain_str})")
+        _info(f"Minimize:      yes  (H-only, heavy atoms frozen, max_iter = {args.max_iter})")
     else:
         _info("Minimize:      no")
     _info(f"Flip rotamers: {'no' if args.no_flip else 'yes  (ASN/GLN/HIS, 5 Å cutoff)'}")
@@ -2096,8 +2086,7 @@ def main():
         if args.minimize:
             next_step("Energy minimization (OpenMM, ff14SB, vacuum)")
             ok = step_minimize(prot_pdb, minimized_pdb, ph=args.ph,
-                               max_iter=args.max_iter, restraint_k=args.restraint_k,
-                               restrain_sidechains=not args.relax_sidechains,
+                               max_iter=args.max_iter,
                                hetatm_heavy=hetatm_heavy_for_walls,
                                has_hydrogens=True)
             if ok:

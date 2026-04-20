@@ -1,8 +1,29 @@
 # GNINA Docking Web Application Dependencies
 #
-# Recommended install via conda + pip:
-#   conda install -c conda-forge rdkit openbabel oddt scipy scikit-learn numpy pymol-open-source
-#   pip install -r requirements.txt
+# This app uses TWO conda environments:
+#
+#   1. gnina_webapp  — serves the web app
+#   2. openmmdl     — runs protein preparation (protprep.py)
+#
+# ── gnina_webapp env ─────────────────────────────────────────────────────────
+#
+#   conda create -n gnina_webapp python=3.11
+#   conda install -n gnina_webapp -c conda-forge \
+#       rdkit openbabel oddt scipy scikit-learn numpy pymol-open-source
+#   pip install -r requirements.txt   (inside the gnina_webapp env)
+#
+# ── openmmdl env ─────────────────────────────────────────────────────────────
+#
+#   conda create -n openmmdl python=3.11
+#   conda install -n openmmdl -c conda-forge \
+#       biopython pdbfixer openmm
+#
+# (openmmdl is auto-detected at startup via OPENMMDL_PYTHON env var or
+#  by running: conda run -n openmmdl python -c "import sys; print(sys.executable)")
+
+# =============================================================================
+# gnina_webapp pip dependencies
+# =============================================================================
 
 # Web framework
 fastapi>=0.109.0

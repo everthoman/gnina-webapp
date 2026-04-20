@@ -34,7 +34,7 @@ import unicodedata
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, Form, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -60,19 +60,26 @@ def _sanitize_mol(mol) -> None:
     except Exception:
         Chem.FastFindRings(mol)
 
-# Configure logging — console + rotating file
+# Configure logging — WARNING+ to console/file (suppress verbose INFO)
 _LOG_FILE = os.path.join(os.path.dirname(__file__), 'gnina_webapp.log')
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(
-            _LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3, encoding='utf-8'
-        ),
+        logging.FileHandler(_LOG_FILE, encoding='utf-8'),
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Slim access log: one line per docking job, appended to a single file
+_ACCESS_LOG_FILE = os.path.join(os.path.dirname(__file__), 'gnina_access.log')
+access_logger = logging.getLogger('gnina.access')
+access_logger.setLevel(logging.INFO)
+access_logger.propagate = False
+_access_handler = logging.FileHandler(_ACCESS_LOG_FILE, encoding='utf-8')
+_access_handler.setFormatter(logging.Formatter('%(message)s'))
+access_logger.addHandler(_access_handler)
 
 # ============================================================================
 # EMBEDDED HTML (fallback if templates/index.html not found)
@@ -716,17 +723,37 @@ PYMOL_PATH = os.environ.get('PYMOL_PATH', str(Path(sys.executable).parent / 'pym
 def _find_openmmdl_python() -> str:
     """Locate the openmmdl conda env python, falling back to sys.executable."""
     import shutil, subprocess
-    if (p := shutil.which("conda")):
+
+    # 1. Try conda (via PATH or common install locations)
+    conda_candidates = list(filter(None, [
+        shutil.which("conda"),
+        *[str(p) for p in [
+            Path.home() / "Programs/miniconda3/bin/conda",
+            Path.home() / "miniconda3/bin/conda",
+            Path.home() / "anaconda3/bin/conda",
+            Path("/opt/conda/bin/conda"),
+        ] if Path(p).exists()]
+    ]))
+    for conda in conda_candidates:
         try:
             result = subprocess.run(
-                [p, "run", "-n", "openmmdl", "python", "-c", "import sys; print(sys.executable)"],
+                [conda, "run", "-n", "openmmdl", "python", "-c", "import sys; print(sys.executable)"],
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode == 0 and (exe := result.stdout.strip()):
                 return exe
         except Exception:
             pass
-    import sys
+
+    # 2. Fall back: look for the env's python directly on disk
+    for candidate in [
+        Path.home() / "Programs/miniconda3/envs/openmmdl/bin/python",
+        Path.home() / "miniconda3/envs/openmmdl/bin/python",
+        Path.home() / "anaconda3/envs/openmmdl/bin/python",
+    ]:
+        if candidate.exists():
+            return str(candidate)
+
     return sys.executable
 
 OPENMMDL_PYTHON = os.environ.get('OPENMMDL_PYTHON') or _find_openmmdl_python()
@@ -2346,10 +2373,14 @@ def generate_pymol_session(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    logger.info(f"Starting GNINA Docking Server")
-    logger.info(f"Configuration: {N_CPU} CPUs, {N_GPU} GPU(s) {DOCK_GPU_IDS}, {CPU_PER_GPU} CPU/GPU, {WORKER_CPU} workers")
+    # Clean up any work directories left over from a previous run
+    if WORK_DIR.exists():
+        for orphan in WORK_DIR.iterdir():
+            shutil.rmtree(orphan, ignore_errors=True)
+    WORK_DIR.mkdir(exist_ok=True)
+    logger.warning(f"Starting GNINA Docking Server")
     yield
-    logger.info("Shutting down...")
+    logger.warning("Shutting down...")
 
 
 app = FastAPI(
@@ -2358,6 +2389,10 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse as _JSONResponse
@@ -2404,6 +2439,7 @@ async def health_check():
 
 @app.post("/dock")
 async def dock_molecules(
+    request: Request,
     receptor: UploadFile = File(..., description="Protein structure in PDB format"),
     reference: UploadFile = File(..., description="Reference ligand for binding site (SDF)"),
     ligand_file: Optional[UploadFile] = File(None, description="Ligands to dock (SDF)"),
@@ -2486,13 +2522,12 @@ async def dock_molecules(
                 ph=ph
             )
             active_jobs[job_id].timings['preparation'] = (datetime.now() - prep_start).total_seconds()
-            
+            active_jobs[job_id].total_ligands = success_count
+
             if success_count == 0:
                 # Log all errors for debugging
                 logger.error(f"All ligand preparations failed.")
                 raise HTTPException(400, f"Failed to prepare any ligands from SMILES.")
-            
-            logger.info(f"Prepared {success_count}/{total_count} ligands")
         
         else:
             # Save uploaded SDF to raw path
@@ -2718,7 +2753,13 @@ async def dock_molecules(
                     + (" (+ PyMOL session)" if pse_path else ""),
             result_file=str(final_path)
         )
-        logger.info(f"Job {job_id} completed: {num_poses_out} poses in {total_time:.1f}s")
+        logger.warning(f"Job {job_id} completed: {num_poses_out} poses in {total_time:.1f}s")
+        _client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
+        _n_ligands = active_jobs[job_id].total_ligands or 0
+        access_logger.info(
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | ip={_client_ip} | "
+            f"job={job_id} | ligands={_n_ligands} | poses={num_poses_out} | time={total_time:.1f}s"
+        )
 
         stem = session_name if session_name else f"docking_{job_id}"
 
@@ -2753,7 +2794,8 @@ async def dock_molecules(
     
     finally:
         async def cleanup():
-            await asyncio.sleep(3600)  # Keep for 1 hour
+            failed = active_jobs.get(job_id, {}) and active_jobs[job_id].status == JobStatus.FAILED
+            await asyncio.sleep(300 if failed else 3600)  # 5 min for failures, 1 h for success
             if work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
             if job_id in active_jobs:
