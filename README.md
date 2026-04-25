@@ -4,7 +4,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
 
 ## Features
 
-- **Flexible ligand input**: SMILES strings or SDF files (2D or 3D)
+- **Flexible ligand input**: SMILES strings or SDF files (2D or 3D); SMILES lines that exceed the input box width are flagged inline and blocked at submission to prevent identifier-mismatch errors from browser line-wrapping
 - **Automatic 2D→3D conversion**: OpenBabel-based 3D coordinate generation and protonation at target pH
 - **Dual-GPU docking**: Load-balanced across two GPUs via `CUDA_VISIBLE_DEVICES`
 - **Real-time progress**: WebSocket-based live updates during docking
@@ -117,7 +117,7 @@ A ZIP file containing:
 | `CNNscore` | GNINA CNN pose quality score |
 | `CNNaffinity` | GNINA CNN predicted affinity |
 | `CNN_VS` | GNINA CNN virtual screening score |
-| `DockingRank` | Global pose rank across all ligands (sorted by selected metric) |
+| `DockingRank` | Per-ligand pose rank (1 = best pose for that ligand); used by PoseViewer to navigate states |
 | `MCS_RMSD` | MCS-aligned RMSD to reference (Å) |
 | `Shape_Sim` | 3D shape Tanimoto similarity to reference (0–1) |
 | `Ref_Sim` | 2D ECFP4 Tanimoto similarity to reference (0–1) |
