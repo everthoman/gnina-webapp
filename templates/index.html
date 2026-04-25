@@ -892,6 +892,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             <div class="progress-header">
                 <span class="progress-title">Docking Progress</span>
                 <span class="progress-status" id="progressStatus">Preparing</span>
+                <button type="button" id="cancelBtn" onclick="cancelJob()" style="display:none; margin-left:auto; padding:0.25rem 0.75rem; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.35); border-radius:6px; color:#f87171; cursor:pointer; font-size:0.82rem;">✕ Cancel</button>
             </div>
             
             <div class="progress-bar-container">
@@ -1303,12 +1304,17 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 formData.delete('ligand_smiles');
             }
 
+            // Generate job ID client-side so we can connect WebSocket before submitting
+            jobId = Math.random().toString(36).slice(2, 10);
+            formData.append('client_job_id', jobId);
+
             // UI state
             submitBtn.disabled = true;
             submitText.textContent = 'Processing...';
             submitSpinner.style.display = 'block';
             progressPanel.classList.add('visible');
-            
+            document.getElementById('cancelBtn').style.display = '';
+
             // Reset progress
             document.getElementById('progressBar').style.width = '0%';
             document.getElementById('progressMessage').textContent = 'Submitting job...';
@@ -1318,7 +1324,9 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             document.getElementById('ligandProgress').textContent = '0 / 0';
             document.getElementById('timePrepare').textContent = '—';
             document.getElementById('timeDocking').textContent = '—';
-            
+
+            connectWebSocket(jobId);
+
             try {
                 const response = await fetch('/dock', {
                     method: 'POST',
@@ -1389,8 +1397,22 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 submitBtn.disabled = false;
                 submitText.textContent = '🚀 Start Docking';
                 submitSpinner.style.display = 'none';
+                document.getElementById('cancelBtn').style.display = 'none';
+                if (ws) { ws.close(); ws = null; }
             }
         });
+
+        // ── Job cancellation ──────────────────────────────────────────────────
+        async function cancelJob() {
+            if (!jobId) return;
+            document.getElementById('cancelBtn').disabled = true;
+            document.getElementById('cancelBtn').textContent = 'Cancelling...';
+            try {
+                await fetch(`/cancel/${jobId}`, { method: 'POST' });
+            } catch (e) {
+                console.error('Cancel request failed', e);
+            }
+        }
 
         // ── Saved structures (localStorage) ───────────────────────────────────
         const LS_PREFIX = 'gnina_saved_';
@@ -1491,9 +1513,9 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
         refreshSavedDropdown();
 
         // Connect WebSocket for progress updates (optional)
-        function connectWebSocket(jobId) {
+        function connectWebSocket(id) {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${jobId}`);
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/${id}`);
             
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);

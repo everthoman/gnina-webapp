@@ -783,6 +783,8 @@ class JobProgress:
     error: Optional[str] = None
     result_file: Optional[str] = None
     timings: Dict[str, float] = field(default_factory=dict)
+    cancelled: bool = False
+    gnina_procs: list = field(default_factory=list)
 
 # Global job tracking
 active_jobs: Dict[str, JobProgress] = {}
@@ -1196,7 +1198,8 @@ class GninaDockingEngine:
         exhaustiveness: int = 8,
         cnn_scoring: str = 'rescore',
         autobox_add: float = 4.0,
-        seed: int = 666
+        seed: int = 666,
+        job_id: str = '',
     ) -> Tuple[bool, str]:
         """
         Run GNINA docking on a specific GPU.
@@ -1243,7 +1246,11 @@ class GninaDockingEngine:
                 stderr=asyncio.subprocess.PIPE,
                 env=env
             )
+            if job_id and job_id in active_jobs:
+                active_jobs[job_id].gnina_procs.append(proc)
             stdout, stderr = await proc.communicate()
+            if job_id and job_id in active_jobs and active_jobs[job_id].cancelled:
+                return False, "cancelled"
             
             # Log GNINA output for debugging
             stdout_str = stdout.decode() if stdout else ""
@@ -1639,7 +1646,8 @@ cmd.quit()
                 num_modes=num_poses,
                 exhaustiveness=exhaustiveness,
                 cnn_scoring=cnn_scoring,
-                seed=seed
+                seed=seed,
+                job_id=job_id,
             )
             gpu_tasks.append(task)
             output_files.append(output_path)
@@ -2471,10 +2479,11 @@ async def dock_molecules(
     posebusters: bool = Form(False),
     plif_sim: bool = Form(False),
     session_name: str = Form(''),
+    client_job_id: Optional[str] = Form(None, description="Client-generated job ID for WebSocket tracking"),
 ):
     """
     Perform molecular docking with GNINA.
-    
+
     Accepts either an SDF file with ligands or a list of SMILES strings.
     The reference ligand is used to define the binding site (autobox).
     """
@@ -2494,8 +2503,11 @@ async def dock_molecules(
     if not has_file and not has_smiles:
         raise HTTPException(400, "Provide either ligand_file (SDF) or ligand_smiles")
     
-    # Create job
-    job_id = str(uuid.uuid4())[:8]
+    # Create job — use client-supplied ID if valid, otherwise generate one
+    if client_job_id and re.match(r'^[a-zA-Z0-9_-]{4,32}$', client_job_id):
+        job_id = client_job_id
+    else:
+        job_id = str(uuid.uuid4())[:8]
     active_jobs[job_id] = JobProgress(job_id=job_id)
     
     # Create working directory
@@ -2896,6 +2908,29 @@ async def get_job_status(job_id: str):
         "error": job.error,
         "timings": job.timings
     }
+
+
+@app.post("/cancel/{job_id}")
+async def cancel_job(job_id: str):
+    """Cancel a running docking job by killing its GNINA subprocesses."""
+    job = active_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
+        raise HTTPException(400, "Job already finished")
+    job.cancelled = True
+    for proc in job.gnina_procs:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    await job_processor.update_progress(
+        job_id,
+        status=JobStatus.FAILED,
+        message="Cancelled by user",
+    )
+    logger.warning(f"Job {job_id} cancelled by user")
+    return {"status": "cancelled"}
 
 
 # ============================================================================
