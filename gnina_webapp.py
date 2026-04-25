@@ -913,79 +913,98 @@ def _fix_split_sdf_blocks(content: str) -> str:
 def parse_smiles_input(smiles_text: str) -> List[Tuple[str, str]]:
     """
     Parse SMILES input, supporting optional identifiers.
-    
+
     Formats supported:
     - SMILES only: CCO
     - SMILES with space-separated ID: CCO ethanol
     - SMILES with comma-separated ID: CCO,ethanol
     - SMILES with tab-separated ID: CCO\tethanol
-    
+
+    Long SMILES that were hard-wrapped (e.g. pasted from an editor that breaks
+    at 80 chars) are detected and rejoined: if a line is not a valid SMILES but
+    concatenating it with the next line yields a valid SMILES, the two lines are
+    merged and the second line's identifier (if any) is used.
+
     Returns: List of (smiles, identifier) tuples
     """
-    results = []
-    
-    # Normalize line endings (handle Windows \r\n and old Mac \r)
+    # Normalize line endings
     smiles_text = smiles_text.replace('\r\n', '\n').replace('\r', '\n')
-    
     lines = smiles_text.strip().split('\n')
-    
     logger.info(f"parse_smiles_input: received {len(lines)} lines")
-    
+
+    # --- pass 1: parse each line individually, tracking whether the identifier
+    #             was explicitly supplied or auto-generated ---
+    raw: List[Tuple[str, str, bool]] = []  # (smiles, identifier, explicit_id)
     for i, line in enumerate(lines):
         line = line.strip()
         if not line:
             continue
-        
+
         smiles = None
         identifier = None
-        
-        # Try different separators in order of priority: tab, comma, space
-        # Tab is most reliable since SMILES don't contain tabs
+        explicit_id = False
+
         if '\t' in line:
             parts = line.split('\t', 1)
             smiles = parts[0].strip()
-            identifier = parts[1].strip() if len(parts) > 1 else None
+            if len(parts) > 1 and parts[1].strip():
+                identifier = parts[1].strip()
+                explicit_id = True
         elif ',' in line and not line.startswith('['):
-            # Comma, but be careful - SMILES can contain commas in atom lists like [C,N]
-            # Only split on comma if it's clearly a separator (followed by non-SMILES char)
-            # Simple heuristic: if there's a comma followed by a space or letter, it's a separator
-            comma_idx = line.rfind(',')  # Use last comma
-            after_comma = line[comma_idx+1:].strip() if comma_idx >= 0 else ""
-            # Check if after comma looks like an identifier (starts with letter, no SMILES chars)
-            if comma_idx > 0 and after_comma and after_comma[0].isalpha() and '=' not in after_comma and '(' not in after_comma:
+            comma_idx = line.rfind(',')
+            after_comma = line[comma_idx + 1:].strip() if comma_idx >= 0 else ''
+            if comma_idx > 0 and after_comma and after_comma[0].isalpha() \
+                    and '=' not in after_comma and '(' not in after_comma:
                 smiles = line[:comma_idx].strip()
                 identifier = after_comma
+                explicit_id = True
             else:
                 smiles = line
         elif ' ' in line:
-            # Space - split on last space that's followed by identifier-like text
-            # SMILES don't usually have spaces, so this is usually safe
-            parts = line.rsplit(None, 1)  # Split on last whitespace
+            parts = line.rsplit(None, 1)
             if len(parts) == 2:
-                potential_smiles = parts[0].strip()
                 potential_id = parts[1].strip()
-                # Check if the second part looks like an ID (alphanumeric, not SMILES-like)
-                if potential_id and potential_id[0].isalpha() and '=' not in potential_id and '(' not in potential_id:
-                    smiles = potential_smiles
+                if potential_id and potential_id[0].isalpha() \
+                        and '=' not in potential_id and '(' not in potential_id:
+                    smiles = parts[0].strip()
                     identifier = potential_id
+                    explicit_id = True
                 else:
                     smiles = line
             else:
                 smiles = line
         else:
             smiles = line
-        
-        # Generate default identifier if none provided
+
         if not identifier:
             identifier = f"ligand_{i+1:04d}"
-        
-        # Clean identifier (remove problematic characters)
         identifier = re.sub(r'[^\w\-.]', '_', identifier)
-        
+
         if smiles:
-            results.append((smiles, identifier))
-            logger.info(f"  Parsed line {i}: ID='{identifier}' SMILES='{smiles[:60]}{'...' if len(smiles) > 60 else ''}'")
-    
+            raw.append((smiles, identifier, explicit_id))
+
+    # --- pass 2: rejoin hard-wrapped SMILES ---
+    # If line N is not a valid SMILES but N + (N+1) is, merge them and take
+    # line N+1's identifier when it was explicitly supplied.
+    results: List[Tuple[str, str]] = []
+    i = 0
+    while i < len(raw):
+        smi, ident, explicit = raw[i]
+        if i + 1 < len(raw) and Chem.MolFromSmiles(smi) is None:
+            next_smi, next_ident, next_explicit = raw[i + 1]
+            combined = smi + next_smi
+            if Chem.MolFromSmiles(combined) is not None:
+                final_ident = next_ident if next_explicit else ident
+                results.append((combined, final_ident))
+                logger.info(
+                    f"  Merged wrapped SMILES lines {i}+{i+1}: "
+                    f"ID='{final_ident}' SMILES='{combined[:60]}{'...' if len(combined) > 60 else ''}'")
+                i += 2
+                continue
+        results.append((smi, ident))
+        logger.info(f"  Parsed line {i}: ID='{ident}' SMILES='{smi[:60]}{'...' if len(smi) > 60 else ''}'")
+        i += 1
+
     logger.info(f"parse_smiles_input: returning {len(results)} SMILES")
     return results
 
