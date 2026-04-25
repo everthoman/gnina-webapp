@@ -786,6 +786,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                             identifier is optional and can be separated by a space, tab, or comma
                             (e.g. <code>CCO ethanol</code> or <code>CCO,ethanol</code>)
                         </div>
+                        <div id="smilesLengthWarning" style="display:none; color: var(--warning, #f59e0b); font-size: 0.8rem; margin-top: 0.4rem;"></div>
                     </div>
                 </div>
 
@@ -1165,10 +1166,37 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             });
         });
 
+        // Measure how many monospace characters fit in the textarea's inner width
+        function smilesMaxChars() {
+            const style = window.getComputedStyle(smilesInput);
+            const innerWidth = smilesInput.clientWidth
+                - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.font = `${style.fontSize} ${style.fontFamily}`;
+            const charW = ctx.measureText('M').width;
+            return charW > 0 ? Math.floor(innerWidth / charW) : 200;
+        }
+
+        function checkSmilesLineLength() {
+            const lines = smilesInput.value.split('\n');
+            const maxChars = smilesMaxChars();
+            const tooLong = lines.filter(l => l.length > maxChars);
+            const warn = document.getElementById('smilesLengthWarning');
+            if (tooLong.length > 0) {
+                warn.textContent = `⚠ ${tooLong.length} line(s) exceed the input width (max ${maxChars} chars). Long lines will be rejected — please shorten or split them.`;
+                warn.style.display = 'block';
+            } else {
+                warn.style.display = 'none';
+            }
+            return tooLong.length === 0;
+        }
+
         // Count SMILES
         smilesInput.addEventListener('input', () => {
             const lines = smilesInput.value.split('\n').filter(line => line.trim());
             document.getElementById('smilesCount').textContent = lines.length;
+            checkSmilesLineLength();
         });
 
         // File validation
@@ -1285,6 +1313,10 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 const smiles = smilesInput.value.trim();
                 if (!smiles) {
                     showAlert('error', 'Please enter at least one SMILES string');
+                    return;
+                }
+                if (!checkSmilesLineLength()) {
+                    showAlert('error', 'One or more SMILES lines exceed the input box width. Please shorten or split them before submitting.');
                     return;
                 }
             } else {
