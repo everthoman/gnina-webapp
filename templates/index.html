@@ -1138,6 +1138,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
         let currentInputMode = 'smiles';
         let ws = null;
         let jobId = null;
+        let dockAbortController = null;
 
         // DOM elements
         const form = document.getElementById('dockingForm');
@@ -1304,9 +1305,14 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 formData.delete('ligand_smiles');
             }
 
+            // Abort any previous in-flight request and close its WebSocket
+            if (dockAbortController) { dockAbortController.abort(); dockAbortController = null; }
+            if (ws) { ws.close(); ws = null; }
+
             // Generate job ID client-side so we can connect WebSocket before submitting
             jobId = Math.random().toString(36).slice(2, 10);
             formData.append('client_job_id', jobId);
+            dockAbortController = new AbortController();
 
             // UI state
             submitBtn.disabled = true;
@@ -1314,6 +1320,8 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             submitSpinner.style.display = 'block';
             progressPanel.classList.add('visible');
             document.getElementById('cancelBtn').style.display = '';
+            document.getElementById('cancelBtn').disabled = false;
+            document.getElementById('cancelBtn').textContent = '✕ Cancel';
 
             // Reset progress
             document.getElementById('progressBar').style.width = '0%';
@@ -1330,7 +1338,8 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             try {
                 const response = await fetch('/dock', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: dockAbortController.signal,
                 });
                 
                 if (response.ok) {
@@ -1385,6 +1394,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 }
                 
             } catch (error) {
+                if (error.name === 'AbortError') return; // superseded by new submission
                 console.error('Error:', error);
                 updateProgress({
                     status: 'failed',
@@ -1394,6 +1404,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 showAlert('error', `Request failed: ${error.message}`);
                 
             } finally {
+                dockAbortController = null;
                 submitBtn.disabled = false;
                 submitText.textContent = '🚀 Start Docking';
                 submitSpinner.style.display = 'none';
