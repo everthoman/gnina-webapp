@@ -1853,9 +1853,14 @@ cmd.quit()
             poses = poses[:max_poses]
 
         # Write combined SDF from raw GNINA blocks (preserves exact format).
+        # DockingRank is per-ligand (1 = best pose of that ligand) so that it
+        # matches the PyMOL state number, which PoseViewer uses for navigation.
+        from collections import defaultdict as _dd
+        ligand_rank: Dict[str, int] = _dd(int)
         with open(output_path, 'w') as combined_f:
-            for rank, (score, mol, mol_name, has_score, raw_block) in enumerate(poses):
-                rank_1 = rank + 1
+            for score, mol, mol_name, has_score, raw_block in poses:
+                ligand_rank[mol_name] += 1
+                pose_rank = ligand_rank[mol_name]
 
                 if raw_block is not None:
                     # strip() removes both leading \n (from \n$$$$\n join) and trailing whitespace.
@@ -1866,10 +1871,10 @@ cmd.quit()
                     if '> <Structure_ID>' not in base and '> <Structure ID>' not in base:
                         base += f'\n\n> <Structure_ID>\n{mol_name}\n'
                     # Re-strip so DockingRank always gets a proper blank line before it.
-                    block_text = base.rstrip('\r\n ') + f'\n\n> <DockingRank>\n{rank_1}\n\n$$$$\n'
+                    block_text = base.rstrip('\r\n ') + f'\n\n> <DockingRank>\n{pose_rank}\n\n$$$$\n'
                 else:
                     # Fallback through RDKit (shouldn't happen for GNINA output)
-                    mol.SetIntProp('DockingRank', rank_1)
+                    mol.SetIntProp('DockingRank', pose_rank)
                     block_text = Chem.MolToMolBlock(mol)
                     for pname in mol.GetPropNames():
                         block_text += f'> <{pname}>\n{mol.GetProp(pname)}\n\n'
