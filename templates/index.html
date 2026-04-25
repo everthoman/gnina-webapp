@@ -546,6 +546,17 @@
         .btn-prepare:hover { background: rgba(16, 185, 129, 0.3); }
         .btn-prepare:disabled { opacity: 0.5; cursor: not-allowed; }
 
+        .saved-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+        .saved-row select { flex: 1; min-width: 10rem; }
+        .btn-saved-load { padding: 0.3rem 0.75rem; background: rgba(99,102,241,0.2); border: 1px solid rgba(99,102,241,0.4); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 0.85rem; }
+        .btn-saved-load:hover { background: rgba(99,102,241,0.35); }
+        .btn-saved-delete { padding: 0.3rem 0.6rem; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; color: #f87171; cursor: pointer; font-size: 0.85rem; }
+        .btn-saved-delete:hover { background: rgba(239,68,68,0.3); }
+        .save-as-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
+        .save-as-row input[type=text] { flex: 1; min-width: 8rem; padding: 0.3rem 0.6rem; font-size: 0.85rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+        .btn-save-struct { padding: 0.3rem 0.75rem; background: rgba(16,185,129,0.2); border: 1px solid rgba(16,185,129,0.4); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 0.85rem; }
+        .btn-save-struct:hover { background: rgba(16,185,129,0.35); }
+
         #protprepResults {
             margin-top: 1rem;
             padding: 1rem;
@@ -709,6 +720,13 @@
                     </button>
                     <span id="ppRunStatus" class="protprep-status"></span>
                 </div>
+                <div id="saveAsRow" class="save-as-row" style="display:none">
+                    <span style="font-size:0.85rem; color:var(--text-muted);">💾 Save for reuse:</span>
+                    <input type="text" id="saveAsName" placeholder="Structure name">
+                    <button type="button" class="btn-save-struct" onclick="saveCurrentStructure()">Save in browser</button>
+                    <button type="button" class="btn-save-struct" onclick="downloadPreparedFiles()" title="Download prepared PDB and reference SDF to disk">⬇ Download files</button>
+                    <span id="saveAsStatus" style="font-size:0.8rem;"></span>
+                </div>
             </div>
         </div>
 
@@ -717,6 +735,14 @@
             <!-- Receptor & Reference -->
             <div class="form-card">
                 <h2>📁 Input Structures</h2>
+                <div id="savedStructRow" style="display:none; margin-bottom:0.75rem;">
+                    <label style="font-size:0.875rem; font-weight:500; display:block; margin-bottom:0.4rem;">Saved structures</label>
+                    <div class="saved-row">
+                        <select id="savedStructSelect"></select>
+                        <button type="button" class="btn-saved-load" onclick="loadSavedStructure()">Load</button>
+                        <button type="button" class="btn-saved-delete" onclick="deleteSavedStructure()" title="Delete saved structure">✕</button>
+                    </div>
+                </div>
                 <div class="form-grid">
                     <div class="form-group">
                         <label class="required">Protein Target (PDB)</label>
@@ -1086,6 +1112,17 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
 
                 status.className = 'protprep-status success';
                 status.textContent = 'Done! Receptor and reference ligand auto-populated below.';
+
+                // Show save-as row so user can store this structure locally
+                if (data.prepared_pdb_b64) {
+                    document.getElementById('saveAsRow').style.display = '';
+                    document.getElementById('saveAsRow')._pdb = { b64: data.prepared_pdb_b64, name: data.prepared_pdb_name };
+                    document.getElementById('saveAsRow')._sdf = data.ligand_sdf_b64
+                        ? { b64: data.ligand_sdf_b64, name: data.ligand_sdf_name }
+                        : null;
+                    const stem = data.prepared_pdb_name.replace(/_prepared.*/, '').replace(/\.pdb$/, '');
+                    document.getElementById('saveAsName').value = stem;
+                }
             } catch (err) {
                 status.className = 'protprep-status error';
                 status.textContent = 'Error: ' + err.message;
@@ -1354,6 +1391,104 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 submitSpinner.style.display = 'none';
             }
         });
+
+        // ── Saved structures (localStorage) ───────────────────────────────────
+        const LS_PREFIX = 'gnina_saved_';
+
+        function _savedKey(name) { return LS_PREFIX + name; }
+
+        function listSavedStructures() {
+            const names = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && k.startsWith(LS_PREFIX)) names.push(k.slice(LS_PREFIX.length));
+            }
+            return names.sort();
+        }
+
+        function refreshSavedDropdown() {
+            const names = listSavedStructures();
+            const row = document.getElementById('savedStructRow');
+            const sel = document.getElementById('savedStructSelect');
+            sel.innerHTML = '';
+            if (names.length === 0) { row.style.display = 'none'; return; }
+            row.style.display = '';
+            names.forEach(n => {
+                const opt = document.createElement('option');
+                opt.value = n; opt.textContent = n;
+                sel.appendChild(opt);
+            });
+        }
+
+        function _downloadB64(b64, filename) {
+            const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            const url = URL.createObjectURL(new Blob([bytes]));
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadPreparedFiles() {
+            const row = document.getElementById('saveAsRow');
+            if (row._pdb) _downloadB64(row._pdb.b64, row._pdb.name);
+            if (row._sdf) _downloadB64(row._sdf.b64, row._sdf.name);
+        }
+
+        function saveCurrentStructure() {
+            const row = document.getElementById('saveAsRow');
+            const name = document.getElementById('saveAsName').value.trim();
+            const status = document.getElementById('saveAsStatus');
+            if (!name) { status.textContent = 'Enter a name first'; status.style.color = 'var(--error)'; return; }
+            if (!row._pdb) { status.textContent = 'No prepared structure available'; status.style.color = 'var(--error)'; return; }
+            const record = { pdb: row._pdb, sdf: row._sdf || null };
+            try {
+                localStorage.setItem(_savedKey(name), JSON.stringify(record));
+                status.textContent = `✓ Saved "${name}"`;
+                status.style.color = 'var(--success)';
+                refreshSavedDropdown();
+                // Pre-select the just-saved entry
+                document.getElementById('savedStructSelect').value = name;
+            } catch (e) {
+                status.textContent = 'Save failed (storage full?)';
+                status.style.color = 'var(--error)';
+            }
+        }
+
+        function loadSavedStructure() {
+            const name = document.getElementById('savedStructSelect').value;
+            if (!name) return;
+            const raw = localStorage.getItem(_savedKey(name));
+            if (!raw) return;
+            const record = JSON.parse(raw);
+            if (record.pdb) {
+                const pdbBytes = Uint8Array.from(atob(record.pdb.b64), c => c.charCodeAt(0));
+                const pdbFile = new File([pdbBytes], record.pdb.name, { type: 'chemical/x-pdb' });
+                const dt1 = new DataTransfer();
+                dt1.items.add(pdbFile);
+                document.getElementById('receptorFile').files = dt1.files;
+                document.getElementById('receptorInfo').textContent = `✓ ${record.pdb.name} (saved)`;
+            }
+            if (record.sdf) {
+                const sdfBytes = Uint8Array.from(atob(record.sdf.b64), c => c.charCodeAt(0));
+                const sdfFile = new File([sdfBytes], record.sdf.name, { type: 'chemical/x-mdl-sdfile' });
+                const dt2 = new DataTransfer();
+                dt2.items.add(sdfFile);
+                document.getElementById('referenceFile').files = dt2.files;
+            }
+        }
+
+        function deleteSavedStructure() {
+            const name = document.getElementById('savedStructSelect').value;
+            if (!name) return;
+            if (!confirm(`Delete saved structure "${name}"?`)) return;
+            localStorage.removeItem(_savedKey(name));
+            refreshSavedDropdown();
+        }
+
+        // Populate on page load
+        refreshSavedDropdown();
 
         // Connect WebSocket for progress updates (optional)
         function connectWebSocket(jobId) {

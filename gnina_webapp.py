@@ -1421,6 +1421,7 @@ class DockingJobProcessor:
         reference_path: str,
         docking_results_sdf: str,
         session_name: str = '',
+        sort_by: str = 'minimizedAffinity',
     ) -> Optional[str]:
         """
         Generate a PyMOL session (.pse) from the docked SDF output.
@@ -1451,15 +1452,28 @@ class DockingJobProcessor:
             content = f.read()
         raw_blocks = [b for b in content.split('$$$$') if b.strip()]
 
+        higher_is_better = sort_by in ('CNNscore', 'CNNaffinity', 'CNN_VS')
+
+        def _block_score(block: str) -> float:
+            for field in ([sort_by] if sort_by != 'minimizedAffinity' else []) + ['minimizedAffinity']:
+                m = re.search(r'>\s*<' + re.escape(field) + r'>\s*\n\s*([+-]?\d+\.?\d*(?:[eE][+-]?\d+)?)', block)
+                if m:
+                    v = float(m.group(1))
+                    return -v if higher_is_better else v
+            return 0.0
+
         from collections import defaultdict
         ligand_blocks: Dict[str, list] = defaultdict(list)
         for block in raw_blocks:
             mol_name = block.strip().split('\n')[0].strip() or 'unknown'
             ligand_blocks[mol_name].append(block.strip())
 
-        # Write one SDF per ligand (all poses → multi-state object in PyMOL)
+        # Write one SDF per ligand (all poses → multi-state object in PyMOL).
+        # Sort each ligand's poses by minimizedAffinity (lower = better) so that
+        # state 1 is always the best pose for that ligand.
         ligand_entries = []  # (pymol_obj_name, sdf_path)
         for mol_name, blocks in ligand_blocks.items():
+            blocks.sort(key=_block_score)
             obj_name = _pymol_name(mol_name)
             lig_sdf = os.path.join(pymol_dir, f'{obj_name}.sdf')
             with open(lig_sdf, 'w') as f:
@@ -2740,6 +2754,7 @@ async def dock_molecules(
                 reference_path=str(reference_path),
                 docking_results_sdf=str(final_path),
                 session_name=session_name,
+                sort_by=sort_by,
             )
 
         total_time = (datetime.now() - start_time).total_seconds()

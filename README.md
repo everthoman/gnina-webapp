@@ -14,8 +14,8 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
   - `Ref_Sim` — 2D Morgan ECFP4 Tanimoto similarity vs reference ligand (RDKit)
   - `PLIF_Sim` — Protein-Ligand Interaction Fingerprint Tanimoto similarity vs reference ligand (ODDT)
   - `PB_Flags` — [PoseBusters](https://github.com/maabuu/posebusters) failure count (`config='mol'`)
-- **Protein preparation**: Optional integrated pipeline — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs. Pipeline: PDBFixer repair → PDBFixer protonation → ASN/GLN/HIS rotamer optimisation → OpenMM minimization (heavy atoms frozen, H positions optimised to convergence). Unchecking a chain in the UI hides its HETATM groups automatically.
-- **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, pocket residues shown as full lines with residue labels, surface on atoms within 5 Å of poses, reference ligand (green sticks), and docked poses
+- **Protein preparation**: Optional integrated pipeline — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs. Pipeline: PDBFixer repair → PDBFixer protonation → ASN/GLN/HIS rotamer optimisation → OpenMM minimization (heavy atoms frozen, H positions optimised to convergence). Unchecking a chain in the UI hides its HETATM groups automatically. Prepared receptor and reference ligand can be saved to browser storage for quick reuse, or downloaded to disk.
+- **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, pocket residues shown as full lines with residue labels, surface on atoms within 5 Å of poses, reference ligand (green sticks), and docked poses. Each unique ligand (identified by its SMILES identifier or SDF title) becomes a separate PyMOL object; multiple poses become states ordered by the selected sort metric (best pose = state 1).
 - **Named sessions**: User-defined session name propagated to output SDF, PSE, and ZIP filenames
 - **DataWarrior-compatible SDF output**: Correct protonation states (COO⁻, NH₃⁺), proper block formatting, DockingRank field
 
@@ -117,7 +117,7 @@ A ZIP file containing:
 | `CNNscore` | GNINA CNN pose quality score |
 | `CNNaffinity` | GNINA CNN predicted affinity |
 | `CNN_VS` | GNINA CNN virtual screening score |
-| `DockingRank` | Pose rank within each ligand |
+| `DockingRank` | Global pose rank across all ligands (sorted by selected metric) |
 | `MCS_RMSD` | MCS-aligned RMSD to reference (Å) |
 | `Shape_Sim` | 3D shape Tanimoto similarity to reference (0–1) |
 | `Ref_Sim` | 2D ECFP4 Tanimoto similarity to reference (0–1) |
