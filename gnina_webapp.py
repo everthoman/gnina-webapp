@@ -1523,14 +1523,9 @@ cmd.hide('everything', 'protein')
 cmd.show('cartoon', 'protein')
 cmd.spectrum('count', 'rainbow', 'protein and name CA')
 
-# --- Reference ligand: green carbons, element colours, polar H shown ---
-cmd.load(r'{reference_path}', 'reference_ligand')
-cmd.show('sticks', 'reference_ligand')
-cmd.hide('nonbonded', 'reference_ligand')
-cmd.util.cbag('reference_ligand')
-cmd.hide('sticks', 'reference_ligand and hydro and (neighbor (elem C))')
-
 # --- Docked poses: polar H shown, non-polar H hidden ---
+# Loaded before reference_ligand so PoseViewer's sequential object mapping
+# aligns with the SDF row order (reference_ligand gets the last slot).
 {load_cmds}
 
 ligand_objs = [{ligand_obj_list}]
@@ -1549,6 +1544,13 @@ cmd.label('pocket_residues and name CA', '"%s%s" % (resn, resi)')
 cmd.show('surface', 'pocket_atoms')
 cmd.set('surface_color', 'grey90', 'protein')
 cmd.set('transparency', 0.5, 'protein')
+
+# --- Reference ligand: loaded last so PoseViewer row 1 maps to first docked ligand ---
+cmd.load(r'{reference_path}', 'reference_ligand')
+cmd.show('sticks', 'reference_ligand')
+cmd.hide('nonbonded', 'reference_ligand')
+cmd.util.cbag('reference_ligand')
+cmd.hide('sticks', 'reference_ligand and hydro and (neighbor (elem C))')
 
 cmd.deselect()
 cmd.orient(all_ligands_sel if ligand_objs else 'protein')
