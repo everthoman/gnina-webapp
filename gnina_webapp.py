@@ -858,6 +858,100 @@ def _has_3d_coords(mol) -> bool:
                for i in range(mol.GetNumAtoms()))
 
 
+_RESIDUE_TOKEN_RE = re.compile(r'([A-Za-z])\s*[:/\- ]?\s*(\d+)')
+
+
+def parse_residue_list(text: str) -> List[Tuple[str, int]]:
+    """Parse a residue specification like "A123, A:125, B 45, C/678".
+
+    Returns a list of (chain, resnum) tuples in input order, deduplicated.
+    Raises ValueError on empty or unparseable input.
+    """
+    if not text or not text.strip():
+        raise ValueError("residue list is empty")
+    matches = _RESIDUE_TOKEN_RE.findall(text)
+    if not matches:
+        raise ValueError(
+            "could not parse residues — expected e.g. 'A123, A:125, B 45'"
+        )
+    seen = set()
+    out: List[Tuple[str, int]] = []
+    for chain, num in matches:
+        key = (chain.upper(), int(num))
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def compute_residue_centroid(
+    pdb_path: str,
+    residues: List[Tuple[str, int]],
+) -> Tuple[float, float, float]:
+    """Compute the centroid of the specified residues from a PDB file.
+
+    Uses Cα atom for each residue when present; otherwise falls back to the
+    heavy-atom centroid of that residue (e.g. HETATM ligand residues).
+
+    Raises ValueError if any requested residue is not found in the file.
+    """
+    wanted = {(c.upper(), n) for c, n in residues}
+    found_ca: Dict[Tuple[str, int], Tuple[float, float, float]] = {}
+    found_heavy: Dict[Tuple[str, int], List[Tuple[float, float, float]]] = {}
+
+    with open(pdb_path, 'r', errors='replace') as f:
+        for line in f:
+            if not (line.startswith('ATOM') or line.startswith('HETATM')):
+                continue
+            if len(line) < 54:
+                continue
+            atom_name = line[12:16].strip()
+            chain = line[21:22].strip().upper()
+            try:
+                resnum = int(line[22:26])
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+            except ValueError:
+                continue
+            key = (chain, resnum)
+            if key not in wanted:
+                continue
+            element = line[76:78].strip().upper() if len(line) >= 78 else ''
+            if not element:
+                element = ''.join(ch for ch in atom_name if ch.isalpha())[:1].upper()
+            if element == 'H':
+                continue
+            if atom_name == 'CA':
+                found_ca[key] = (x, y, z)
+            found_heavy.setdefault(key, []).append((x, y, z))
+
+    missing = sorted(wanted - set(found_heavy.keys()))
+    if missing:
+        raise ValueError(
+            "residue(s) not found in receptor: "
+            + ', '.join(f"{c}{n}" for c, n in missing)
+        )
+
+    coords: List[Tuple[float, float, float]] = []
+    for key in wanted:
+        if key in found_ca:
+            coords.append(found_ca[key])
+        else:
+            atoms = found_heavy[key]
+            cx = sum(a[0] for a in atoms) / len(atoms)
+            cy = sum(a[1] for a in atoms) / len(atoms)
+            cz = sum(a[2] for a in atoms) / len(atoms)
+            coords.append((cx, cy, cz))
+
+    n = len(coords)
+    return (
+        sum(c[0] for c in coords) / n,
+        sum(c[1] for c in coords) / n,
+        sum(c[2] for c in coords) / n,
+    )
+
+
 def _fix_split_sdf_blocks(content: str) -> str:
     """
     GNINA writes docking scores in a separate $$$$-delimited block after the structure:
@@ -1211,7 +1305,9 @@ class GninaDockingEngine:
         receptor_path: str,
         ligand_path: str,
         output_path: str,
-        reference_path: str,
+        reference_path: Optional[str] = None,
+        center: Optional[Tuple[float, float, float]] = None,
+        size: Optional[Tuple[float, float, float]] = None,
         gpu_id: int = 0,
         num_modes: int = 9,
         exhaustiveness: int = 8,
@@ -1222,28 +1318,37 @@ class GninaDockingEngine:
     ) -> Tuple[bool, str]:
         """
         Run GNINA docking on a specific GPU.
-        
-        Args:
-            receptor_path: Path to receptor PDB file
-            ligand_path: Path to ligands SDF file
-            output_path: Path for output docked poses
-            reference_path: Path to reference ligand for autobox
-            gpu_id: GPU device ID
-            num_modes: Number of binding modes to generate
-            exhaustiveness: Search exhaustiveness
-            cnn_scoring: CNN scoring mode
-            autobox_add: Padding around reference ligand for search box
-        
+
+        Binding site is defined either by reference_path (autobox) OR by
+        center + size. Exactly one of those must be provided.
+
         Returns:
             Tuple of (success: bool, message: str)
         """
+        if reference_path and center:
+            raise ValueError("dock_batch: pass either reference_path or center, not both")
+        if not reference_path and not center:
+            raise ValueError("dock_batch: must pass reference_path or center")
+
         cmd = [
             self.gnina_path,
             '-r', receptor_path,
             '-l', ligand_path,
             '-o', output_path,
-            '--autobox_ligand', reference_path,
-            '--autobox_add', str(autobox_add),
+        ]
+        if reference_path:
+            cmd += ['--autobox_ligand', reference_path,
+                    '--autobox_add', str(autobox_add)]
+        else:
+            cx, cy, cz = center
+            sx, sy, sz = size if size else (16.0, 16.0, 16.0)
+            cmd += ['--center_x', f'{cx:.3f}',
+                    '--center_y', f'{cy:.3f}',
+                    '--center_z', f'{cz:.3f}',
+                    '--size_x', f'{sx:.3f}',
+                    '--size_y', f'{sy:.3f}',
+                    '--size_z', f'{sz:.3f}']
+        cmd += [
             '--num_modes', str(num_modes),
             '--exhaustiveness', str(exhaustiveness),
             '--cnn_scoring', cnn_scoring,
@@ -1444,8 +1549,10 @@ class DockingJobProcessor:
         self,
         work_dir: str,
         receptor_path: str,
-        reference_path: str,
         docking_results_sdf: str,
+        reference_path: Optional[str] = None,
+        center: Optional[Tuple[float, float, float]] = None,
+        size: Optional[Tuple[float, float, float]] = None,
         session_name: str = '',
         sort_by: str = 'minimizedAffinity',
     ) -> Optional[str]:
@@ -1515,6 +1622,39 @@ class DockingJobProcessor:
             for obj, sdf in ligand_entries
         )
         ligand_obj_list = ', '.join(f"'{obj}'" for obj, _ in ligand_entries)
+
+        if reference_path:
+            site_block = (
+                f"# --- Reference ligand: green carbons, element colours, polar H shown ---\n"
+                f"cmd.load(r'{reference_path}', 'reference_ligand')\n"
+                f"cmd.show('sticks', 'reference_ligand')\n"
+                f"cmd.hide('nonbonded', 'reference_ligand')\n"
+                f"cmd.util.cbag('reference_ligand')\n"
+                f"cmd.hide('sticks', 'reference_ligand and hydro and (neighbor (elem C))')"
+            )
+        elif center and size:
+            cx, cy, cz = center
+            sx, sy, sz = size
+            site_block = (
+                f"# --- Search box wireframe ---\n"
+                f"cmd.pseudoatom('box_center', pos=[{cx:.3f}, {cy:.3f}, {cz:.3f}])\n"
+                f"cmd.hide('everything', 'box_center')\n"
+                f"from pymol.cgo import LINEWIDTH, BEGIN, LINES, VERTEX, END, COLOR\n"
+                f"_hx, _hy, _hz = {sx/2:.3f}, {sy/2:.3f}, {sz/2:.3f}\n"
+                f"_cx, _cy, _cz = {cx:.3f}, {cy:.3f}, {cz:.3f}\n"
+                f"_corners = [(_cx + dx*_hx, _cy + dy*_hy, _cz + dz*_hz)\n"
+                f"             for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)]\n"
+                f"_edges = [(0,1),(0,2),(0,4),(1,3),(1,5),(2,3),(2,6),\n"
+                f"          (3,7),(4,5),(4,6),(5,7),(6,7)]\n"
+                f"_obj = [LINEWIDTH, 2.0, COLOR, 1.0, 1.0, 0.0, BEGIN, LINES]\n"
+                f"for a, b in _edges:\n"
+                f"    _obj += [VERTEX, *_corners[a], VERTEX, *_corners[b]]\n"
+                f"_obj += [END]\n"
+                f"cmd.load_cgo(_obj, 'search_box')"
+            )
+        else:
+            site_block = "# (no reference ligand or search box provided)"
+
         script = f"""from pymol import cmd
 
 # --- Protein ---
@@ -1523,12 +1663,7 @@ cmd.hide('everything', 'protein')
 cmd.show('cartoon', 'protein')
 cmd.spectrum('count', 'rainbow', 'protein and name CA')
 
-# --- Reference ligand: green carbons, element colours, polar H shown ---
-cmd.load(r'{reference_path}', 'reference_ligand')
-cmd.show('sticks', 'reference_ligand')
-cmd.hide('nonbonded', 'reference_ligand')
-cmd.util.cbag('reference_ligand')
-cmd.hide('sticks', 'reference_ligand and hydro and (neighbor (elem C))')
+{site_block}
 
 # --- Docked poses: polar H shown, non-polar H hidden ---
 {load_cmds}
@@ -1588,9 +1723,11 @@ cmd.quit()
         self,
         job_id: str,
         receptor_path: str,
-        reference_path: str,
         ligand_path: str,
         output_dir: str,
+        reference_path: Optional[str] = None,
+        center: Optional[Tuple[float, float, float]] = None,
+        size: Optional[Tuple[float, float, float]] = None,
         num_poses: int = 9,
         exhaustiveness: int = 8,
         cnn_scoring: str = 'rescore',
@@ -1661,6 +1798,8 @@ cmd.quit()
                 ligand_path=batch_path,
                 output_path=output_path,
                 reference_path=reference_path,
+                center=center,
+                size=size,
                 gpu_id=gpu_id,
                 num_modes=num_poses,
                 exhaustiveness=exhaustiveness,
@@ -2487,7 +2626,12 @@ async def health_check():
 async def dock_molecules(
     request: Request,
     receptor: UploadFile = File(..., description="Protein structure in PDB format"),
-    reference: UploadFile = File(..., description="Reference ligand for binding site (SDF)"),
+    reference: Optional[UploadFile] = File(None, description="Reference ligand for binding site (SDF)"),
+    site_residues: Optional[str] = Form(None, description="Residue list 'A123, B45' (alternative to reference)"),
+    site_x: Optional[float] = Form(None, description="Search-box centre X (Å); pair with site_y/site_z to bypass reference/residues"),
+    site_y: Optional[float] = Form(None, description="Search-box centre Y (Å)"),
+    site_z: Optional[float] = Form(None, description="Search-box centre Z (Å)"),
+    box_size: float = Form(16.0, ge=5, le=60, description="Cubic search box edge (Å) for residue/xyz mode"),
     ligand_file: Optional[UploadFile] = File(None, description="Ligands to dock (SDF)"),
     ligand_smiles: Optional[str] = Form(None, description="SMILES strings, one per line"),
     ph: float = Form(7.4, ge=0, le=14, description="pH for protonation"),
@@ -2509,7 +2653,8 @@ async def dock_molecules(
     Perform molecular docking with GNINA.
 
     Accepts either an SDF file with ligands or a list of SMILES strings.
-    The reference ligand is used to define the binding site (autobox).
+    Binding site is defined either by a reference ligand SDF (autobox) or
+    by a list of residues whose centroid defines the search-box centre.
     """
     # Sanitize session name for use in filenames
     session_name = re.sub(r'[^\w\-]', '_', session_name.strip()).strip('_')
@@ -2517,10 +2662,26 @@ async def dock_molecules(
     # Validate inputs
     if not receptor.filename:
         raise HTTPException(400, "Receptor PDB file is required")
-    
-    if not reference.filename:
-        raise HTTPException(400, "Reference ligand SDF is required for binding site definition")
-    
+
+    has_reference = reference is not None and reference.filename
+    has_residues = site_residues is not None and site_residues.strip()
+    xyz_provided = [v for v in (site_x, site_y, site_z) if v is not None]
+    if xyz_provided and len(xyz_provided) != 3:
+        raise HTTPException(400, "Provide all three of site_x, site_y, site_z")
+    has_xyz = len(xyz_provided) == 3
+
+    n_modes = sum([has_reference, has_residues, has_xyz])
+    if n_modes == 0:
+        raise HTTPException(
+            400,
+            "Provide a binding-site source: reference ligand SDF, residue list, or xyz coordinates"
+        )
+    if n_modes > 1:
+        raise HTTPException(
+            400,
+            "Provide only one binding-site source: reference ligand, residue list, or xyz coordinates"
+        )
+
     has_file = ligand_file is not None and ligand_file.filename
     has_smiles = ligand_smiles is not None and ligand_smiles.strip()
     
@@ -2545,12 +2706,34 @@ async def dock_molecules(
         receptor_path = work_dir / secure_filename(receptor.filename)
         content = await receptor.read()
         receptor_path.write_bytes(content)
-        
-        # Save reference
-        reference_path = work_dir / secure_filename(reference.filename)
-        content = await reference.read()
-        reference_path.write_bytes(content)
-        
+
+        # Resolve binding-site definition
+        reference_path: Optional[Path] = None
+        site_center: Optional[Tuple[float, float, float]] = None
+        site_size: Optional[Tuple[float, float, float]] = None
+
+        if has_reference:
+            reference_path = work_dir / secure_filename(reference.filename)
+            content = await reference.read()
+            reference_path.write_bytes(content)
+        elif has_xyz:
+            site_center = (float(site_x), float(site_y), float(site_z))
+            site_size = (box_size, box_size, box_size)
+            logger.info(
+                f"Job {job_id}: xyz-defined site centre={site_center}, size={site_size}"
+            )
+        else:
+            try:
+                residues = parse_residue_list(site_residues)
+                site_center = compute_residue_centroid(str(receptor_path), residues)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            site_size = (box_size, box_size, box_size)
+            logger.info(
+                f"Job {job_id}: residue-defined site centre={site_center}, "
+                f"size={site_size}, residues={residues}"
+            )
+
         # Prepare ligands
         ligand_path = work_dir / "ligands_prepared.sdf"
         
@@ -2688,7 +2871,9 @@ async def dock_molecules(
         docked_path = await job_processor.run_docking_job(
             job_id=job_id,
             receptor_path=str(receptor_path),
-            reference_path=str(reference_path),
+            reference_path=str(reference_path) if reference_path else None,
+            center=site_center,
+            size=site_size,
             ligand_path=str(ligand_path),
             output_dir=str(work_dir),
             num_poses=num_poses,
@@ -2734,16 +2919,16 @@ async def dock_molecules(
         if num_poses_out == 0:
             raise HTTPException(500, "Docking produced no poses. Check server logs for GPU errors.")
 
-        # Optional MCS RMSD annotation
-        if mcs_rmsd:
+        # Optional MCS RMSD annotation (requires reference ligand)
+        if mcs_rmsd and reference_path:
             await job_processor.update_progress(
                 job_id, progress=92, message="Calculating MCS RMSD...",
                 current_stage="MCS RMSD"
             )
             job_processor.add_mcs_rmsd(str(final_path), str(reference_path))
 
-        # Optional shape similarity annotation
-        if shape_sim:
+        # Optional shape similarity annotation (requires reference ligand)
+        if shape_sim and reference_path:
             await job_processor.update_progress(
                 job_id, progress=93, message="Calculating shape similarity...",
                 current_stage="Shape Sim"
@@ -2751,14 +2936,14 @@ async def dock_molecules(
             job_processor.add_shape_sim(str(final_path), str(reference_path))
 
         # Optional 2D Morgan ECFP4 similarity to reference
-        if ref_sim:
+        if ref_sim and reference_path:
             await job_processor.update_progress(
                 job_id, progress=93, message="Calculating 2D similarity to reference...",
                 current_stage="Ref Sim"
             )
             job_processor.add_ref_sim(str(final_path), str(reference_path))
 
-        # Optional PoseBusters validation
+        # Optional PoseBusters validation (no reference required)
         if posebusters:
             await job_processor.update_progress(
                 job_id, progress=94, message="Running PoseBusters validation...",
@@ -2766,7 +2951,7 @@ async def dock_molecules(
             )
             job_processor.add_posebusters_flags(str(final_path))
 
-        if plif_sim:
+        if plif_sim and reference_path:
             await job_processor.update_progress(
                 job_id, progress=95, message="Calculating PLIF similarity...",
                 current_stage="PLIF Sim"
@@ -2787,7 +2972,9 @@ async def dock_molecules(
             pse_path = await job_processor.generate_pymol_session(
                 work_dir=str(work_dir),
                 receptor_path=str(receptor_path),
-                reference_path=str(reference_path),
+                reference_path=str(reference_path) if reference_path else None,
+                center=site_center,
+                size=site_size,
                 docking_results_sdf=str(final_path),
                 session_name=session_name,
                 sort_by=sort_by,
@@ -3064,7 +3251,7 @@ async def protprep_inspect(
 @app.post("/protprep/run")
 async def protprep_run(
     token: str = Form(...),
-    keep_het: str = Form(...),
+    keep_het: Optional[str] = Form(None),
     ph: float = Form(7.4),
     chains: Optional[str] = Form(None),    # space-separated, blank = all
     cofactors: Optional[str] = Form(None), # space-separated resnames to keep in receptor
@@ -3088,11 +3275,12 @@ async def protprep_run(
         OPENMMDL_PYTHON, PROTPREP_SCRIPT,
         "--input",    str(input_pdb),
         "--output",   str(output_pdb),
-        "--keep-het", keep_het,
         "--ph",       str(ph),
         "--no-pdb2pqr",  # pdb2pqr not installed; PDBFixer used instead
         "--minimize",    # OpenMM restrained vacuum minimization to optimize H positions
     ]
+    if keep_het and keep_het.strip():
+        cmd += ["--keep-het", keep_het]
     if chains and chains.strip():
         cmd += ["--chain"] + chains.split()
     if cofactors and cofactors.strip():

@@ -750,9 +750,42 @@
                         <div id="receptorInfo" class="file-info"></div>
                     </div>
                     <div class="form-group">
-                        <label class="required">Reference Ligand (SDF)</label>
-                        <input type="file" name="reference" id="referenceFile" accept=".sdf,.mol" required>
-                        <div class="help-text">Defines the binding site location (autobox)</div>
+                        <label class="required">Binding Site Definition</label>
+                        <div class="input-toggle" style="margin-bottom: 0.5rem;">
+                            <button type="button" class="toggle-btn active" data-site="reference">Reference Ligand</button>
+                            <button type="button" class="toggle-btn" data-site="residues">Residue List</button>
+                            <button type="button" class="toggle-btn" data-site="xyz">XYZ Coordinates</button>
+                        </div>
+                        <div id="siteReferenceSection">
+                            <input type="file" name="reference" id="referenceFile" accept=".sdf,.mol">
+                            <div class="help-text">Defines the binding site (autobox)</div>
+                        </div>
+                        <div id="siteResiduesSection" style="display: none;">
+                            <input type="text" name="site_residues" id="siteResidues"
+                                   placeholder="e.g. A123, A:125, B 45"
+                                   style="width: 100%; margin-bottom: 0.4rem;">
+                            <input type="number" name="box_size" id="boxSize"
+                                   value="16" step="1" min="5" max="60"
+                                   style="width: 100%;">
+                            <div class="help-text">
+                                Centroid of listed residues defines the box centre.
+                                Box edge in Å (default 16).
+                            </div>
+                        </div>
+                        <div id="siteXyzSection" style="display: none;">
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; margin-bottom: 0.4rem;">
+                                <input type="number" name="site_x" id="siteX" step="0.1" placeholder="x (Å)">
+                                <input type="number" name="site_y" id="siteY" step="0.1" placeholder="y (Å)">
+                                <input type="number" name="site_z" id="siteZ" step="0.1" placeholder="z (Å)">
+                            </div>
+                            <input type="number" id="boxSizeXyz"
+                                   value="16" step="1" min="5" max="60"
+                                   style="width: 100%;">
+                            <div class="help-text">
+                                Search-box centre in receptor coordinates.
+                                Box edge in Å (default 16).
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1058,7 +1091,12 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             if (!ppToken) return;
             const selected = document.querySelector('input[name="ppHet"]:checked');
             const cofactorBoxes = [...document.querySelectorAll('input[name="ppCofactor"]:checked')];
-            if (!selected) { alert('Please select a reference ligand (the Reference radio).'); return; }
+            const hasHetGroups = Object.keys(ppHetGroups).length > 0;
+            if (hasHetGroups && !selected) {
+                if (!confirm('No reference ligand selected — prepare as apo structure (you will need to supply a residue list to define the binding site)?')) {
+                    return;
+                }
+            }
 
             const btn = document.getElementById('ppRunBtn');
             const status = document.getElementById('ppRunStatus');
@@ -1073,7 +1111,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
 
                 const fd = new FormData();
                 fd.append('token', ppToken);
-                fd.append('keep_het', selected.value);
+                if (selected) fd.append('keep_het', selected.value);
                 fd.append('ph', document.getElementById('ppPh').value);
                 if (selectedChains) fd.append('chains', selectedChains);
                 if (cofactorNames) fd.append('cofactors', cofactorNames);
@@ -1103,17 +1141,22 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                     document.getElementById('receptorInfo').textContent = `✓ ${data.prepared_pdb_name} (prepared)`;
                 }
 
-                // Auto-populate reference ligand file input
+                // Auto-populate reference ligand file input — or switch to residue mode for apo
                 if (data.ligand_sdf_b64) {
                     const sdfBytes = Uint8Array.from(atob(data.ligand_sdf_b64), c => c.charCodeAt(0));
                     const sdfFile = new File([sdfBytes], data.ligand_sdf_name, { type: 'chemical/x-mdl-sdfile' });
                     const dt2 = new DataTransfer();
                     dt2.items.add(sdfFile);
                     document.getElementById('referenceFile').files = dt2.files;
+                    document.querySelector('.toggle-btn[data-site="reference"]').click();
+                } else {
+                    document.querySelector('.toggle-btn[data-site="residues"]').click();
                 }
 
                 status.className = 'protprep-status success';
-                status.textContent = 'Done! Receptor and reference ligand auto-populated below.';
+                status.textContent = data.ligand_sdf_b64
+                    ? 'Done! Receptor and reference ligand auto-populated below.'
+                    : 'Done! Apo receptor prepared — supply a residue list below to define the binding site.';
 
                 // Show save-as row so user can store this structure locally
                 if (data.prepared_pdb_b64) {
@@ -1137,6 +1180,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
 
         // State
         let currentInputMode = 'smiles';
+        let currentSiteMode = 'reference';
         let ws = null;
         let jobId = null;
         let dockAbortController = null;
@@ -1151,20 +1195,45 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
         const alertError = document.getElementById('alertError');
         const alertSuccess = document.getElementById('alertSuccess');
 
-        // Toggle input mode
-        document.querySelectorAll('.toggle-btn').forEach(btn => {
+        const REF_ONLY_OPTIONS = ['mcs_rmsd', 'shape_sim', 'ref_sim', 'plif_sim'];
+        function applySiteMode() {
+            const refMode = currentSiteMode === 'reference';
+            document.getElementById('siteReferenceSection').style.display = currentSiteMode === 'reference' ? 'block' : 'none';
+            document.getElementById('siteResiduesSection').style.display = currentSiteMode === 'residues' ? 'block' : 'none';
+            document.getElementById('siteXyzSection').style.display = currentSiteMode === 'xyz' ? 'block' : 'none';
+            REF_ONLY_OPTIONS.forEach(name => {
+                const cb = document.querySelector(`input[name="${name}"]`);
+                if (!cb) return;
+                cb.disabled = !refMode;
+                if (!refMode) cb.checked = false;
+                const lbl = cb.closest('label');
+                if (lbl) lbl.style.opacity = refMode ? '' : '0.5';
+            });
+        }
+
+        // Toggle ligand-input mode (SMILES vs SDF)
+        document.querySelectorAll('.toggle-btn[data-input]').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.toggle-btn[data-input]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                
                 currentInputMode = btn.dataset.input;
-                
-                document.getElementById('smilesInputSection').style.display = 
+                document.getElementById('smilesInputSection').style.display =
                     currentInputMode === 'smiles' ? 'block' : 'none';
-                document.getElementById('fileInputSection').style.display = 
+                document.getElementById('fileInputSection').style.display =
                     currentInputMode === 'file' ? 'block' : 'none';
             });
         });
+
+        // Toggle binding-site source (reference ligand vs residue list)
+        document.querySelectorAll('.toggle-btn[data-site]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.toggle-btn[data-site]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentSiteMode = btn.dataset.site;
+                applySiteMode();
+            });
+        });
+        applySiteMode();
 
         // Measure how many monospace characters fit in the textarea's inner width
         function smilesMaxChars() {
@@ -1291,7 +1360,8 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             // Validate
             const receptorFile = document.getElementById('receptorFile').files[0];
             const referenceFile = document.getElementById('referenceFile').files[0];
-            
+            const residuesText = document.getElementById('siteResidues').value.trim();
+
             const sessionName = document.getElementById('sessionName').value.trim();
             if (!sessionName) {
                 showAlert('error', 'Please enter a Session Name');
@@ -1303,10 +1373,34 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 showAlert('error', 'Please upload a receptor PDB file');
                 return;
             }
-            
-            if (!referenceFile) {
-                showAlert('error', 'Please upload a reference ligand SDF file');
-                return;
+
+            if (currentSiteMode === 'reference') {
+                if (!referenceFile) {
+                    showAlert('error', 'Please upload a reference ligand SDF file');
+                    return;
+                }
+            } else if (currentSiteMode === 'residues') {
+                if (!residuesText) {
+                    showAlert('error', 'Please enter a residue list (e.g. A123, A125, B45)');
+                    document.getElementById('siteResidues').focus();
+                    return;
+                }
+                if (!/[A-Za-z]\s*[:\/\- ]?\s*\d+/.test(residuesText)) {
+                    showAlert('error', 'Residue list must contain entries like "A123" or "A:125"');
+                    return;
+                }
+            } else {
+                const xs = document.getElementById('siteX').value;
+                const ys = document.getElementById('siteY').value;
+                const zs = document.getElementById('siteZ').value;
+                if (xs === '' || ys === '' || zs === '') {
+                    showAlert('error', 'Please enter all three coordinates (x, y, z)');
+                    return;
+                }
+                if (!isFinite(parseFloat(xs)) || !isFinite(parseFloat(ys)) || !isFinite(parseFloat(zs))) {
+                    showAlert('error', 'x, y, z must be numeric');
+                    return;
+                }
             }
             
             if (currentInputMode === 'smiles') {
@@ -1335,6 +1429,23 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 formData.delete('ligand_file');
             } else {
                 formData.delete('ligand_smiles');
+            }
+
+            if (currentSiteMode === 'reference') {
+                formData.delete('site_residues');
+                formData.delete('site_x');
+                formData.delete('site_y');
+                formData.delete('site_z');
+                formData.delete('box_size');
+            } else if (currentSiteMode === 'residues') {
+                formData.delete('reference');
+                formData.delete('site_x');
+                formData.delete('site_y');
+                formData.delete('site_z');
+            } else {
+                formData.delete('reference');
+                formData.delete('site_residues');
+                formData.set('box_size', document.getElementById('boxSizeXyz').value);
             }
 
             // Abort any previous in-flight request and close its WebSocket

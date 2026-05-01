@@ -96,7 +96,7 @@ journalctl -u gnina-webapp -f
 |---|---|
 | Protein Preparation | Optional: upload or fetch PDB, select chains/reference ligand/cofactors, runs PDBFixer + OpenMM minimization, auto-fills receptor and reference inputs. Ligands and cofactors are identified by instance (`RESNAME/CHAIN:RESNUM`), so duplicate residue names in different chains are handled correctly. |
 | Receptor (PDB) | Protein structure for docking |
-| Reference ligand (SDF) | Defines the binding site (autobox); used as reference for post-processing metrics |
+| Binding site | One of three modes: (1) **Reference ligand (SDF)** — autobox around the ligand; required for `MCS_RMSD`, `Shape_Sim`, `Ref_Sim`, `PLIF_Sim` post-processing. (2) **Residue list** (e.g. `A123, A:125, B 45`) — Cα/heavy-atom centroid defines the box centre. (3) **XYZ coordinates** — explicit search-box centre in receptor coordinates. Modes 2 and 3 use a configurable cubic box edge (default 16 Å) and bypass the reference-ligand pipeline. |
 | Ligands (SDF or SMILES) | Molecules to dock |
 | Session name | Prefix for output filenames |
 | LigPrep pH | Target pH for OpenBabel protonation |
