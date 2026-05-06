@@ -1520,11 +1520,12 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 } else {
                     // Error
                     let errorMsg = 'Docking failed';
+                    const bodyText = await response.text();
                     try {
-                        const errorData = await response.json();
+                        const errorData = JSON.parse(bodyText);
                         errorMsg = errorData.detail || errorData.error || errorMsg;
                     } catch {
-                        errorMsg = await response.text() || errorMsg;
+                        errorMsg = bodyText || errorMsg;
                     }
                     
                     updateProgress({

@@ -1047,8 +1047,7 @@ def parse_smiles_input(smiles_text: str) -> List[Tuple[str, str]]:
         elif ',' in line and not line.startswith('['):
             comma_idx = line.rfind(',')
             after_comma = line[comma_idx + 1:].strip() if comma_idx >= 0 else ''
-            if comma_idx > 0 and after_comma and after_comma[0].isalpha() \
-                    and '=' not in after_comma and '(' not in after_comma:
+            if comma_idx > 0 and after_comma and re.match(r'^[\w][\w\-.]*$', after_comma):
                 smiles = line[:comma_idx].strip()
                 identifier = after_comma
                 explicit_id = True
@@ -1058,8 +1057,7 @@ def parse_smiles_input(smiles_text: str) -> List[Tuple[str, str]]:
             parts = line.rsplit(None, 1)
             if len(parts) == 2:
                 potential_id = parts[1].strip()
-                if potential_id and potential_id[0].isalpha() \
-                        and '=' not in potential_id and '(' not in potential_id:
+                if potential_id and re.match(r'^[\w][\w\-.]*$', potential_id):
                     smiles = parts[0].strip()
                     identifier = potential_id
                     explicit_id = True
@@ -2663,8 +2661,8 @@ async def dock_molecules(
     if not receptor.filename:
         raise HTTPException(400, "Receptor PDB file is required")
 
-    has_reference = reference is not None and reference.filename
-    has_residues = site_residues is not None and site_residues.strip()
+    has_reference = bool(reference is not None and reference.filename)
+    has_residues = bool(site_residues is not None and site_residues.strip())
     xyz_provided = [v for v in (site_x, site_y, site_z) if v is not None]
     if xyz_provided and len(xyz_provided) != 3:
         raise HTTPException(400, "Provide all three of site_x, site_y, site_z")
