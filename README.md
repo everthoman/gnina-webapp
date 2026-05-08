@@ -6,8 +6,9 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
 
 - **Flexible ligand input**: SMILES strings or SDF files (2D or 3D); SMILES lines that exceed the input box width are flagged inline and blocked at submission to prevent identifier-mismatch errors from browser line-wrapping
 - **Automatic 2D→3D conversion**: OpenBabel-based 3D coordinate generation and protonation at target pH
-- **Dual-GPU docking**: Load-balanced across two GPUs via `CUDA_VISIBLE_DEVICES`
-- **Real-time progress**: WebSocket-based live updates during docking
+- **Multi-GPU docking**: Auto-detects all CUDA devices via `nvidia-smi` and load-balances ligands across them via `CUDA_VISIBLE_DEVICES`. Override the device list with the `DOCK_GPUS` env var (e.g. `DOCK_GPUS=0,1` to skip a slow card).
+- **Real-time progress**: WebSocket-based live updates during prep and docking, including a per-ligand counter and live ETA. The docking phase counts completed poses by polling each GPU's incremental SDF output every 2 s.
+- **24-hour re-download window**: Successful job artifacts (SDF + PyMOL ZIP) are retained on the server for 24 h after completion (5 min after failure), then auto-deleted. The completion message exposes a re-download link valid for that window.
 - **Optional post-processing** (per pose, written as SDF fields):
   - `MCS_RMSD` — MCS-aligned RMSD vs reference ligand (RDKit, heavy atoms only)
   - `Shape_Sim` — 3D shape Tanimoto similarity vs reference ligand (RDKit)
@@ -126,14 +127,15 @@ A ZIP file containing:
 
 ## Configuration
 
-Key settings near the top of `gnina_webapp.py`:
+Key settings via environment variables (all optional):
 
-```python
-GNINA_PATH = "/opt/gnina/gnina.1.3.2"
-PYMOL_PATH = "/path/to/pymol"
-DOCK_GPU_ID = 1        # CUDA device index for docking
-N_GPU = 1              # Number of GPUs to use
-```
+| Variable | Default | Purpose |
+|---|---|---|
+| `GNINA_PATH` | `/opt/gnina/gnina.1.3.2` | Path to the gnina binary |
+| `DOCK_GPUS` | auto-detected via `nvidia-smi` | Comma-separated CUDA device indices, e.g. `0,1` to use only GPUs 0 and 1 |
+| `DOCK_GPU_ID` | — | Legacy single-GPU index (use `DOCK_GPUS` for multi-GPU) |
+| `N_CPU` | `os.cpu_count()` | Total CPU budget; 4 cores reserved for the web server, the rest split across GPUs |
+| `OPENMMDL_PYTHON` | `conda run -n openmmdl ...` | Python interpreter used by the protein-prep subprocess |
 
 ## Notes
 
@@ -148,4 +150,7 @@ TRANSFORM c1n[nH:1]nn1 >> c1n[n-:1]nn1  4.89
 
 ### GNINA GPU selection
 The `--device` flag is ignored in GNINA 1.3.2. GPU selection is done via
-`CUDA_VISIBLE_DEVICES` on the subprocess instead.
+`CUDA_VISIBLE_DEVICES` on the subprocess instead. The app load-balances ligands
+evenly across all detected GPUs, so a slow card mixed with fast cards becomes
+the long pole — exclude weak GPUs by setting `DOCK_GPUS=0,1` (etc.) in the
+service environment.

@@ -782,6 +782,7 @@ class JobProgress:
     current_stage: str = ""
     error: Optional[str] = None
     result_file: Optional[str] = None
+    result_zip: Optional[str] = None
     timings: Dict[str, float] = field(default_factory=dict)
     cancelled: bool = False
     gnina_procs: list = field(default_factory=list)
@@ -3039,6 +3040,7 @@ async def dock_molecules(
             with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(str(final_path), f"{stem}.sdf")
                 zf.write(pse_path, f"{stem}.pse")
+            active_jobs[job_id].result_zip = str(zip_path)
             resp = FileResponse(
                 path=str(zip_path),
                 filename=f"{stem}.zip",
@@ -3126,11 +3128,12 @@ async def download_job_results(job_id: str, session_name: str = ""):
     result_path = Path(job.result_file)
     if not result_path.exists():
         raise HTTPException(404, "Result file no longer available")
+    # Prefer the bundled zip (SDF + PyMOL session) recorded on the job.
+    if job.result_zip:
+        zip_path = Path(job.result_zip)
+        if zip_path.exists():
+            return FileResponse(path=str(zip_path), filename=zip_path.name, media_type="application/zip")
     stem = session_name if session_name else f"docking_{job_id}"
-    # Check if a zip (PyMOL session) exists alongside the SDF
-    zip_path = result_path.parent / f"{stem}.zip"
-    if zip_path.exists():
-        return FileResponse(path=str(zip_path), filename=f"{stem}.zip", media_type="application/zip")
     return FileResponse(path=str(result_path), filename=f"{stem}.sdf", media_type="application/octet-stream")
 
 
