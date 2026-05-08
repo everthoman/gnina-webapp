@@ -919,6 +919,13 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 <span id="submitText">🚀 Start Docking</span>
                 <div class="spinner" id="submitSpinner" style="display: none;"></div>
             </button>
+            <p style="margin: 0.6rem 0 0; font-size: 0.78rem; color: var(--text-muted); line-height: 1.45;">
+                🔒 Job files are kept on the server only while the run is active and for 24 hours after success
+                (5 minutes after failure), then automatically deleted. The browser download is the
+                authoritative copy &mdash; save it locally if you want to keep the results beyond that window.
+                The "Save for reuse" buttons above store <em>prepared protein structures</em> in your browser only,
+                never on the server.
+            </p>
         </form>
 
         <!-- Progress panel -->
@@ -951,6 +958,10 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 <div class="progress-detail">
                     <div class="progress-detail-label">Docking</div>
                     <div class="progress-detail-value" id="timeDocking">—</div>
+                </div>
+                <div class="progress-detail">
+                    <div class="progress-detail-label">ETA</div>
+                    <div class="progress-detail-value" id="etaRemaining">—</div>
                 </div>
             </div>
         </div>
@@ -1342,14 +1353,50 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             // Timings
             if (data.timings) {
                 if (data.timings.preparation) {
-                    document.getElementById('timePrepare').textContent = 
+                    document.getElementById('timePrepare').textContent =
                         `${data.timings.preparation.toFixed(1)}s`;
                 }
                 if (data.timings.docking) {
-                    document.getElementById('timeDocking').textContent = 
+                    document.getElementById('timeDocking').textContent =
                         `${data.timings.docking.toFixed(1)}s`;
                 }
             }
+
+            // ETA: rolling estimate once docking is underway and we have signal.
+            // Suppressed until ≥5% progress AND ≥2 ligands processed so the first-batch
+            // outlier doesn't dominate the estimate.
+            const etaEl = document.getElementById('etaRemaining');
+            const isDocking = (data.status === 'docking') ||
+                              (data.current_stage && /dock/i.test(data.current_stage));
+            if (isDocking && !window._dockingStartedAt) {
+                window._dockingStartedAt = Date.now();
+            }
+            const processed = data.processed_ligands || 0;
+            const total = data.total_ligands || 0;
+            const progress = data.progress || 0;
+            if (data.status === 'completed') {
+                etaEl.textContent = 'done';
+            } else if (data.status === 'failed') {
+                etaEl.textContent = '—';
+            } else if (window._dockingStartedAt && processed >= 2 && total > processed && progress >= 5) {
+                const elapsedMs = Date.now() - window._dockingStartedAt;
+                const remaining = total - processed;
+                const etaMs = (elapsedMs / processed) * remaining;
+                etaEl.textContent = formatEta(etaMs);
+            } else if (isDocking) {
+                etaEl.textContent = 'estimating…';
+            }
+        }
+
+        function formatEta(ms) {
+            const s = Math.max(0, Math.round(ms / 1000));
+            if (s < 60) return `${s}s`;
+            const m = Math.floor(s / 60);
+            const rs = s % 60;
+            if (m < 60) return rs ? `${m}m ${rs}s` : `${m}m`;
+            const h = Math.floor(m / 60);
+            const rm = m % 60;
+            return rm ? `${h}h ${rm}m` : `${h}h`;
         }
 
         // Submit form
@@ -1475,6 +1522,8 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             document.getElementById('ligandProgress').textContent = '0 / 0';
             document.getElementById('timePrepare').textContent = '—';
             document.getElementById('timeDocking').textContent = '—';
+            document.getElementById('etaRemaining').textContent = '—';
+            window._dockingStartedAt = null;
 
             connectWebSocket(jobId);
 
@@ -1507,7 +1556,7 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                     window.URL.revokeObjectURL(url);
 
                     const redownloadMsg = completedJobId
-                        ? ` <a href="/jobs/${completedJobId}/download" style="color:#34d399; text-decoration:underline;">Re-download</a> (available 1 h)`
+                        ? ` <a href="/jobs/${completedJobId}/download" style="color:#34d399; text-decoration:underline;">Re-download</a> (available 24 h)`
                         : '';
                     updateProgress({
                         status: 'completed',

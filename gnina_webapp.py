@@ -1741,7 +1741,8 @@ cmd.quit()
             status=JobStatus.DOCKING,
             progress=35,
             message="Starting molecular docking...",
-            current_stage="GPU Docking"
+            current_stage="GPU Docking",
+            processed_ligands=0,
         )
         
         # Count ligands by splitting SDF text (more reliable than RDKit)
@@ -1812,9 +1813,43 @@ cmd.quit()
             job_id,
             message=f"Docking {total_mols} ligands on {len(gpu_tasks)} GPU(s)..."
         )
-        
-        # Run all GPU tasks in parallel
-        results = await asyncio.gather(*gpu_tasks, return_exceptions=True)
+
+        # Poll the per-GPU SDF outputs while docking runs so the UI shows
+        # genuine per-ligand progress (and ETA can compute). gnina writes
+        # num_poses pose-blocks per ligand, each terminated by "$$$$".
+        async def _poll_docking_progress():
+            try:
+                while True:
+                    await asyncio.sleep(2.0)
+                    pose_total = 0
+                    for path in output_files:
+                        try:
+                            with open(path, 'r') as f:
+                                pose_total += f.read().count('$$$$')
+                        except FileNotFoundError:
+                            continue
+                        except OSError:
+                            continue
+                    ligands_done = min(pose_total // max(num_poses, 1), total_mols)
+                    prog = 35 + 50 * (ligands_done / total_mols) if total_mols else 35
+                    await self.update_progress(
+                        job_id,
+                        progress=prog,
+                        processed_ligands=ligands_done,
+                        message=f"Docked {ligands_done}/{total_mols} ligands on {len(gpu_tasks)} GPU(s)..."
+                    )
+            except asyncio.CancelledError:
+                return
+
+        poll_task = asyncio.create_task(_poll_docking_progress())
+        try:
+            results = await asyncio.gather(*gpu_tasks, return_exceptions=True)
+        finally:
+            poll_task.cancel()
+            try:
+                await poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
         
         # Check for errors
         for i, result in enumerate(results):
@@ -3031,7 +3066,7 @@ async def dock_molecules(
     finally:
         async def cleanup():
             failed = active_jobs.get(job_id, {}) and active_jobs[job_id].status == JobStatus.FAILED
-            await asyncio.sleep(300 if failed else 3600)  # 5 min for failures, 1 h for success
+            await asyncio.sleep(300 if failed else 86400)  # 5 min for failures, 24 h for success
             if work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
             if job_id in active_jobs:
@@ -3082,7 +3117,7 @@ async def websocket_progress(websocket: WebSocket, job_id: str):
 
 @app.get("/jobs/{job_id}/download")
 async def download_job_results(job_id: str, session_name: str = ""):
-    """Re-download results for a completed job (available for up to 1 hour)."""
+    """Re-download results for a completed job (available for up to 24 hours)."""
     if job_id not in active_jobs:
         raise HTTPException(404, "Job not found or already expired")
     job = active_jobs[job_id]
