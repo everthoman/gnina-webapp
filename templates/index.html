@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GNINA Molecular Docking</title>
+    <script>
+      // Apply saved theme before first paint to avoid a flash on light pages.
+      (function() {
+        try {
+          var t = localStorage.getItem('gnina-theme');
+          if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        } catch (_) {}
+      })();
+    </script>
     <style>
         @font-face {
             font-family: 'NotoColorEmoji';
@@ -17,11 +26,37 @@
             --success: #10b981;
             --warning: #f59e0b;
             --error: #ef4444;
+            /* dark theme (default) */
             --bg-dark: #0f172a;
             --bg-card: #1e293b;
+            --bg-card-grad: #0f172a;
             --text: #f1f5f9;
             --text-muted: #94a3b8;
             --border: #334155;
+            --title-grad-a: #60a5fa;
+            --title-grad-b: #34d399;
+            --accent-info: #60a5fa;
+            --accent-success: #34d399;
+            --protprep-border: #1e3a5f;
+            --alert-error-text: #fca5a5;
+            --alert-success-text: #6ee7b7;
+            --hover-tint: rgba(255,255,255,0.03);
+        }
+        [data-theme="light"] {
+            --bg-dark: #f1f5f9;
+            --bg-card: #ffffff;
+            --bg-card-grad: #f8fafc;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --border: #cbd5e1;
+            --title-grad-a: #2563eb;
+            --title-grad-b: #059669;
+            --accent-info: #2563eb;
+            --accent-success: #059669;
+            --protprep-border: #bfdbfe;
+            --alert-error-text: #b91c1c;
+            --alert-success-text: #047857;
+            --hover-tint: rgba(15,23,42,0.04);
         }
 
         * {
@@ -49,19 +84,43 @@
             text-align: center;
             margin-bottom: 2rem;
             padding: 2rem;
-            background: linear-gradient(135deg, var(--bg-card) 0%, #0f172a 100%);
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-grad) 100%);
             border-radius: 16px;
             border: 1px solid var(--border);
+            position: relative;
         }
+
+        .theme-toggle {
+            position: absolute;
+            top: 0.75rem;
+            right: 0.75rem;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 999px;
+            padding: 0.35rem 0.85rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            font-family: inherit;
+            line-height: 1;
+        }
+        .theme-toggle:hover { border-color: var(--primary); color: var(--primary); }
 
         .header h1 {
             font-size: 2rem;
             font-weight: 700;
             margin-bottom: 0.5rem;
-            background: linear-gradient(135deg, #60a5fa, #34d399);
+            background: linear-gradient(135deg, var(--title-grad-a), var(--title-grad-b));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
+        }
+
+        .header h1 .emoji {
+            -webkit-text-fill-color: initial;
+            background: none;
+            -webkit-background-clip: initial;
+            background-clip: initial;
         }
 
         .header p {
@@ -423,13 +482,13 @@
         .alert-error {
             background: rgba(239, 68, 68, 0.1);
             border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #fca5a5;
+            color: var(--alert-error-text);
         }
 
         .alert-success {
             background: rgba(16, 185, 129, 0.1);
             border: 1px solid rgba(16, 185, 129, 0.3);
-            color: #6ee7b7;
+            color: var(--alert-success-text);
         }
 
         .alert-icon {
@@ -475,14 +534,14 @@
             border-radius: 12px;
             padding: 1.5rem;
             margin-bottom: 1.5rem;
-            border: 1px solid #1e3a5f;
+            border: 1px solid var(--protprep-border);
         }
 
         .protprep-card h2 {
             font-size: 1.1rem;
             font-weight: 600;
             margin-bottom: 1rem;
-            color: #60a5fa;
+            color: var(--accent-info);
         }
 
         .protprep-toggle {
@@ -521,7 +580,7 @@
             background: rgba(37, 99, 235, 0.15);
             border: 1px solid var(--primary);
             border-radius: 8px;
-            color: #60a5fa;
+            color: var(--accent-info);
             cursor: pointer;
             font-size: 0.875rem;
             font-weight: 500;
@@ -536,7 +595,7 @@
             background: rgba(16, 185, 129, 0.15);
             border: 1px solid var(--success);
             border-radius: 8px;
-            color: #34d399;
+            color: var(--accent-success);
             cursor: pointer;
             font-size: 0.875rem;
             font-weight: 500;
@@ -585,7 +644,7 @@
             border-bottom: 1px solid rgba(51,65,85,0.5);
         }
 
-        .het-table tr:hover td { background: rgba(255,255,255,0.03); }
+        .het-table tr:hover td { background: var(--hover-tint); }
 
         .protprep-status {
             font-size: 0.85rem;
@@ -629,7 +688,8 @@
     <div class="container">
         <!-- Header -->
         <header class="header">
-            <h1>🧬 GNINA Molecular Docking</h1>
+            <button type="button" id="theme-toggle" class="theme-toggle" title="Toggle light/dark theme">dark</button>
+            <h1><span class="emoji">🧬</span> GNINA Molecular Docking</h1>
             <p>GPU-accelerated molecular docking with deep learning scoring</p>
         </header>
 
@@ -968,6 +1028,26 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
     </div>
 
     <script>
+        // ── Theme toggle ───────────────────────────────────────────────────────
+        (function() {
+            const themeBtn = document.getElementById('theme-toggle');
+            function applyTheme(theme) {
+                if (theme === 'light') {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                    themeBtn.textContent = 'light';
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                    themeBtn.textContent = 'dark';
+                }
+            }
+            applyTheme(localStorage.getItem('gnina-theme') || 'dark');
+            themeBtn.addEventListener('click', () => {
+                const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+                localStorage.setItem('gnina-theme', next);
+                applyTheme(next);
+            });
+        })();
+
         // ── Protein Preparation ────────────────────────────────────────────────
 
         let ppMode = 'file';
