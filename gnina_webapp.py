@@ -1662,6 +1662,15 @@ cmd.hide('everything', 'protein')
 cmd.show('cartoon', 'protein')
 cmd.spectrum('count', 'rainbow', 'protein and name CA')
 
+# --- Cofactors (non-polymer HETATM kept in receptor): magenta-carbon sticks ---
+cmd.select('cofactors', 'protein and not polymer and not solvent')
+if cmd.count_atoms('cofactors') > 0:
+    cmd.show('sticks', 'cofactors')
+    cmd.color('magenta', 'cofactors and elem C')
+    cmd.color('atomic', 'cofactors and not elem C')
+    cmd.hide('sticks', 'cofactors and hydro and (neighbor (elem C))')
+cmd.delete('cofactors')
+
 {site_block}
 
 # --- Docked poses: polar H shown, non-polar H hidden ---
@@ -1672,8 +1681,9 @@ for obj in ligand_objs:
     cmd.hide('sticks', obj + ' and hydro and (neighbor (elem C))')
 
 # --- Binding-site residues within 5 Å of any docked pose: lines + labels ---
+# Restrict to polymer atoms so cofactor sticks aren't overdrawn as lines/surface.
 all_ligands_sel = ' or '.join(ligand_objs) if ligand_objs else 'none'
-cmd.select('pocket_atoms', f'protein within 5 of ({{all_ligands_sel}})')
+cmd.select('pocket_atoms', f'protein and polymer within 5 of ({{all_ligands_sel}})')
 cmd.select('pocket_residues', f'byres pocket_atoms')
 cmd.show('lines', 'pocket_residues')
 cmd.hide('lines', 'pocket_residues and hydro and (neighbor (elem C))')
@@ -3357,7 +3367,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "gnina_webapp:app",
         host="172.21.65.193",
-        port=9000,
+        port=5004,
         workers=1,  # Single worker for shared state
         reload=False,
         log_level="info"
