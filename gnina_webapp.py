@@ -1174,7 +1174,8 @@ def prepare_single_ligand(args: Tuple[str, int, float, str]) -> Tuple[int, Optio
         
         if not os.path.exists(protonated_smi_file) or os.path.getsize(protonated_smi_file) == 0:
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            return idx, None, f"Protonation failed: {result1.stderr[:100] if result1.stderr else 'No output'}", identifier
+            stderr_msg = (result1.stderr or 'No output').strip()
+            return idx, None, f"Protonation failed for SMILES '{smiles}': {stderr_msg[:400]}", identifier
         
         # Step 2: Generate 3D from protonated SMILES and minimize
         # --gen3d best: use best (slowest) 3D coordinate generation
@@ -1527,17 +1528,20 @@ class DockingJobProcessor:
             content = f.read()
         mol_count_by_delim = content.count('$$$$')
         logger.info(f"Written file stats: {mol_count_by_delim} $$$$ delimiters, {len(content)} bytes")
-        
+
         # Also log first line of each molecule
         blocks = content.split('$$$$')
         for i, block in enumerate(blocks[:12]):  # First 12
             if block.strip():
                 first_line = block.strip().split('\n')[0]
                 logger.info(f"  Block [{i}] first line: '{first_line}'")
-        
-        verify_suppl = Chem.SDMolSupplier(output_path)
-        verified_count = sum(1 for mol in verify_suppl if mol is not None)
-        logger.info(f"RDKit verification: reads {verified_count} molecules")
+
+        if all_results:
+            verify_suppl = Chem.SDMolSupplier(output_path)
+            verified_count = sum(1 for mol in verify_suppl if mol is not None)
+            logger.info(f"RDKit verification: reads {verified_count} molecules")
+        else:
+            logger.warning("No ligands prepared successfully; skipping RDKit verification of empty SDF")
         
         if errors:
             logger.warning(f"Ligand preparation errors: {errors}")
