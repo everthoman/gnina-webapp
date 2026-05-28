@@ -1134,130 +1134,120 @@ def strip_sdf_properties(sdf_block: str) -> str:
     return '\n'.join(result_lines)
 
 
+def _rdkit_embed_and_minimize(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Embed a SMILES into 3D with ETKDGv3 and minimize with MMFF94s
+    (falling back to UFF when MMFF parameters are missing).
+
+    OpenBabel's --gen3d places bridging phosphorus atoms in square planar
+    geometry (one bond at 180°) for triphosphates and similar — and MMFF94s
+    steepest-descent can't climb out of it. ETKDG builds proper tetrahedral
+    geometry for those cases.
+
+    Returns: (molblock or None, error message or None).
+    """
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None, f"RDKit could not parse SMILES '{smiles}'"
+        mol = Chem.AddHs(mol)
+
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 0xF00D
+        if AllChem.EmbedMolecule(mol, params) != 0:
+            params.useRandomCoords = True
+            if AllChem.EmbedMolecule(mol, params) != 0:
+                return None, "ETKDG embedding failed"
+
+        props = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant='MMFF94s')
+        ff = AllChem.MMFFGetMoleculeForceField(mol, props) if props is not None else None
+        if ff is None:
+            ff = AllChem.UFFGetMoleculeForceField(mol)
+        if ff is not None:
+            ff.Minimize(maxIts=2000)
+
+        return Chem.MolToMolBlock(mol) + '$$$$\n', None
+    except Exception as e:
+        return None, f"RDKit 3D generation error: {e}"
+
+
 def prepare_single_ligand(args: Tuple[str, int, float, str]) -> Tuple[int, Optional[str], Optional[str], str]:
     """
-    Prepare a single ligand from SMILES: protonate at pH with OpenBabel, generate 3D, minimize.
+    Prepare a single ligand from SMILES: protonate at pH with OpenBabel, then
+    build 3D coordinates with RDKit ETKDGv3 and minimize with MMFF94s
+    (falling back to OpenBabel --gen3d only if RDKit fails).
+
     Returns: (index, mol_block or None, error or None, identifier)
-    
+
     This function must be at module level for multiprocessing to work.
-    
-    Note: OpenBabel's -p and --gen3d flags are incompatible (--gen3d resets protonation).
-    So we do it in two steps: 1) protonate to get correct SMILES, 2) generate 3D from protonated SMILES.
     """
     smiles, idx, ph, identifier = args
-    
+    tmp_dir = None
+
     try:
         import subprocess
         import tempfile
-        
-        # Create temp directory for this ligand
+
         tmp_dir = tempfile.mkdtemp(prefix=f"lig_{idx}_")
-        
         smi_file = os.path.join(tmp_dir, "input.smi")
         protonated_smi_file = os.path.join(tmp_dir, "protonated.smi")
-        sdf_file = os.path.join(tmp_dir, "output.sdf")
-        
-        # Write input SMILES with identifier as molecule name
+
         with open(smi_file, 'w') as f:
             f.write(f"{smiles} {identifier}\n")
-        
-        # Step 1: Protonate at specified pH (output as SMILES to preserve protonation state)
-        # -r flag strips salts and small fragments (keeps largest fragment)
+
+        # Step 1: Protonate at pH with OpenBabel (-r strips salts / small fragments)
         cmd_protonate = [
             'obabel', smi_file,
             '-O', protonated_smi_file,
-            '-r',               # Remove salts/small fragments
-            '-p', str(ph)
+            '-r',
+            '-p', str(ph),
         ]
-        
         result1 = subprocess.run(cmd_protonate, capture_output=True, text=True, timeout=30)
-        
+
         if not os.path.exists(protonated_smi_file) or os.path.getsize(protonated_smi_file) == 0:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
             stderr_msg = (result1.stderr or 'No output').strip()
             return idx, None, f"Protonation failed for SMILES '{smiles}': {stderr_msg[:400]}", identifier
-        
-        # Step 2: Generate 3D from protonated SMILES and minimize
-        # --gen3d best: use best (slowest) 3D coordinate generation
-        # --minimize: energy minimization
-        # --ff MMFF94s: MMFF94 with static charges (better for charged molecules)
-        # --crit 1e-7: convergence criterion
-        # --sd: steepest descent minimization
-        cmd_3d = [
-            'obabel', protonated_smi_file,
-            '-O', sdf_file,
-            '--gen3d', 'medium',
-            '--minimize',
-            '--ff', 'MMFF94s',
-            '--crit', '1e-7',
-            '--sd'
-        ]
-        
-        result2 = subprocess.run(cmd_3d, capture_output=True, text=True, timeout=120)
-        
-        # Read output
-        if os.path.exists(sdf_file) and os.path.getsize(sdf_file) > 50:
-            with open(sdf_file, 'r') as f:
-                sdf_block = f.read()
-            
-            # Cleanup
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            
-            # Validate SDF block has required components
-            if sdf_block and '$$$$' in sdf_block and 'M  END' in sdf_block:
-                # Fix the molecule name in the SDF block (first line)
-                # OpenBabel may have mangled it, so we replace it with just the identifier
-                lines = sdf_block.split('\n')
-                if lines:
-                    lines[0] = identifier  # Set first line to just the identifier
-                sdf_block = '\n'.join(lines)
-                
-                # Strip OpenBabel properties (like Energy) - GNINA will add its own
-                sdf_block = strip_sdf_properties(sdf_block)
-                
-                return idx, sdf_block, None, identifier
-            else:
-                return idx, None, f"Incomplete SDF generated (missing M END or $$$$)", identifier
-        
-        # If that failed, try without minimization
-        cmd_3d_simple = [
-            'obabel', protonated_smi_file,
-            '-O', sdf_file,
-            '--gen3d', 'best'
-        ]
-        
-        result3 = subprocess.run(cmd_3d_simple, capture_output=True, text=True, timeout=60)
-        
-        if os.path.exists(sdf_file) and os.path.getsize(sdf_file) > 50:
-            with open(sdf_file, 'r') as f:
-                sdf_block = f.read()
-            
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            
-            # Validate SDF block has required components
-            if sdf_block and '$$$$' in sdf_block and 'M  END' in sdf_block:
-                # Fix the molecule name in the SDF block (first line)
-                lines = sdf_block.split('\n')
-                if lines:
-                    lines[0] = identifier
-                sdf_block = '\n'.join(lines)
-                
-                # Strip OpenBabel properties
-                sdf_block = strip_sdf_properties(sdf_block)
-                
-                return idx, sdf_block, None, identifier
-        
-        # Cleanup and return error
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return idx, None, f"3D generation failed: {result2.stderr[:100] if result2.stderr else 'Unknown error'}", identifier
-        
+
+        with open(protonated_smi_file, 'r') as f:
+            protonated_line = f.readline().strip()
+        # SMI files use tab or whitespace between SMILES and name
+        protonated_smiles = re.split(r'[\s\t]', protonated_line, 1)[0] if protonated_line else ''
+        if not protonated_smiles:
+            return idx, None, f"Protonation produced empty SMILES from '{smiles}'", identifier
+
+        # Step 2: 3D embed + minimize with RDKit (primary)
+        sdf_block, rdkit_err = _rdkit_embed_and_minimize(protonated_smiles)
+
+        # Fallback: OpenBabel --gen3d best (no minimization) if RDKit failed
+        if sdf_block is None:
+            sdf_file = os.path.join(tmp_dir, "output.sdf")
+            cmd_3d = ['obabel', protonated_smi_file, '-O', sdf_file, '--gen3d', 'best']
+            result2 = subprocess.run(cmd_3d, capture_output=True, text=True, timeout=120)
+            if os.path.exists(sdf_file) and os.path.getsize(sdf_file) > 50:
+                with open(sdf_file, 'r') as f:
+                    candidate = f.read()
+                if candidate and '$$$$' in candidate and 'M  END' in candidate:
+                    sdf_block = candidate
+            if sdf_block is None:
+                ob_err = (result2.stderr or 'unknown').strip()[:200]
+                return idx, None, f"3D generation failed for '{smiles}': RDKit={rdkit_err}; OpenBabel={ob_err}", identifier
+
+        # Normalize the title line to the identifier and strip properties
+        lines = sdf_block.split('\n')
+        if lines:
+            lines[0] = identifier
+        sdf_block = '\n'.join(lines)
+        sdf_block = strip_sdf_properties(sdf_block)
+
+        return idx, sdf_block, None, identifier
+
     except subprocess.TimeoutExpired:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         return idx, None, f"Timeout processing: {smiles[:50]}", identifier
     except Exception as e:
-        if 'tmp_dir' in locals():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
         return idx, None, f"Error processing {smiles[:50]}...: {str(e)}", identifier
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def prepare_ligand_batch(batch_args: List[Tuple[str, int, float, str]]) -> List[Tuple[int, Optional[str], Optional[str], str]]:
