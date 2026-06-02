@@ -7,6 +7,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
 - **Flexible ligand input**: SMILES strings or SDF files (2D or 3D); SMILES lines that exceed the input box width are flagged inline and blocked at submission to prevent identifier-mismatch errors from browser line-wrapping
 - **Automatic 2D→3D conversion**: OpenBabel-based 3D coordinate generation and protonation at target pH
 - **Multi-GPU docking**: Auto-detects all CUDA devices via `nvidia-smi` and load-balances ligands across them via `CUDA_VISIBLE_DEVICES`. Override the device list with the `DOCK_GPUS` env var (e.g. `DOCK_GPUS=0,1` to skip a slow card).
+- **Flexible side-chain docking**: Optional. In reference-ligand mode, side chains with any atom within a configurable cutoff (default 3.5 Å) of the reference ligand are allowed to move during docking (gnina `--flexdist_ligand`/`--flexdist`, capped by `FLEX_MAX_RESIDUES`, default 8). The moved side chains are exported as a pose-ordered multi-MODEL `{session}_flex.pdb` (MODEL *n* ↔ pose *n* in the results SDF) and rendered as orange-carbon sticks in the PyMOL session, tracking each ligand's pose state.
 - **Real-time progress**: WebSocket-based live updates during prep and docking, including a per-ligand counter and live ETA. The docking phase counts completed poses by polling each GPU's incremental SDF output every 2 s.
 - **24-hour re-download window**: Successful job artifacts (SDF + PyMOL ZIP) are retained on the server for 24 h after completion (5 min after failure), then auto-deleted. The completion message exposes a re-download link valid for that window.
 - **Optional post-processing** (per pose, written as SDF fields):
@@ -16,7 +17,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
   - `PLIF_Sim` — Protein-Ligand Interaction Fingerprint Tanimoto similarity vs reference ligand (ODDT)
   - `PB_Flags` — [PoseBusters](https://github.com/maabuu/posebusters) failure count (`config='mol'`)
 - **Protein preparation**: Optional integrated pipeline — fetch by PDB ID or upload, select chains and reference ligand, auto-populates docking inputs. Pipeline: PDBFixer repair → PDBFixer protonation → ASN/GLN/HIS rotamer optimisation → OpenMM minimization (heavy atoms frozen, H positions optimised to convergence). Unchecking a chain in the UI hides its HETATM groups automatically. Prepared receptor and reference ligand can be saved to browser storage for quick reuse, or downloaded to disk.
-- **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, pocket residues shown as full lines with residue labels, surface on atoms within 5 Å of poses, reference ligand (green sticks), retained cofactors (magenta-carbon sticks), and docked poses. Each unique ligand (identified by its SMILES identifier or SDF title) becomes a separate PyMOL object; multiple poses become states ordered by the selected sort metric (best pose = state 1).
+- **PyMOL session**: Headless PyMOL generates a `.pse` file with protein rainbow cartoon, pocket residues shown as full lines with residue labels, surface on atoms within 5 Å of poses, reference ligand (green sticks), retained cofactors (magenta-carbon sticks), and docked poses. Each unique ligand (identified by its SMILES identifier or SDF title) becomes a separate PyMOL object; multiple poses become states ordered by the selected sort metric (best pose = state 1). For flexible docking, the moved side chains load as a parallel multi-state `{ligand}_flex` object (orange-carbon sticks) so they track the ligand's pose state.
 - **Named sessions**: User-defined session name propagated to output SDF, PSE, and ZIP filenames
 - **DataWarrior-compatible SDF output**: Correct protonation states (COO⁻, NH₃⁺), proper block formatting, DockingRank field
 
@@ -104,11 +105,13 @@ journalctl -u gnina-webapp -f
 | Poses per ligand | Number of docked poses to generate |
 | Exhaustiveness | GNINA search exhaustiveness (1–64) |
 | CNN scoring | GNINA CNN scoring mode |
+| Flexible side-chain docking | Optional (reference-ligand mode only). Flexes side chains within **Flex Distance** (Å, default 3.5) of the reference ligand. |
 
 ### Outputs
 A ZIP file containing:
 - `{session_name}.sdf` — all docked poses with scoring and optional post-processing fields, ready for DataWarrior
 - `{session_name}.pse` — PyMOL session (if requested)
+- `{session_name}_flex.pdb` — moved receptor side chains, one MODEL per pose (flexible docking only)
 
 ## SDF Output Fields
 
@@ -135,6 +138,7 @@ Key settings via environment variables (all optional):
 | `DOCK_GPUS` | auto-detected via `nvidia-smi` | Comma-separated CUDA device indices, e.g. `0,1` to use only GPUs 0 and 1 |
 | `DOCK_GPU_ID` | — | Legacy single-GPU index (use `DOCK_GPUS` for multi-GPU) |
 | `N_CPU` | `os.cpu_count()` | Total CPU budget; 4 cores reserved for the web server, the rest split across GPUs |
+| `FLEX_MAX_RESIDUES` | `8` | Max side chains made flexible per ligand in flexible docking (gnina `--flex_max`) |
 | `OPENMMDL_PYTHON` | `conda run -n openmmdl ...` | Python interpreter used by the protein-prep subprocess |
 
 ## Notes

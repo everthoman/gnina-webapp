@@ -709,6 +709,10 @@ DOCK_GPU_IDS: List[int] = _detect_gpu_ids()
 N_GPU = len(DOCK_GPU_IDS)
 CPU_PER_GPU = max(1, WORKER_CPU // N_GPU)
 
+# Flexible docking: hard cap on side chains made movable per ligand. Keeps
+# runtime and out_flex size bounded; gnina retains the closest residues.
+FLEX_MAX_RESIDUES = int(os.environ.get('FLEX_MAX_RESIDUES', '8'))
+
 # Working directories
 WORK_DIR = Path("/tmp/gnina_work")
 WORK_DIR.mkdir(exist_ok=True)
@@ -951,6 +955,48 @@ def compute_residue_centroid(
         sum(c[1] for c in coords) / n,
         sum(c[2] for c in coords) / n,
     )
+
+
+def _split_pdb_models(pdb_path: str) -> List[str]:
+    """
+    Split a (possibly multi-MODEL) PDB into one text block per MODEL.
+
+    GNINA's --out_flex writes the moved flexible residues for each output pose,
+    wrapped in MODEL/ENDMDL records in pose order. A single-pose run may omit the
+    MODEL wrapper, in which case the whole file is treated as one block. Returned
+    blocks carry only ATOM/HETATM/TER/CONECT lines (no MODEL/ENDMDL), ready to be
+    re-wrapped with a fresh MODEL number.
+    """
+    try:
+        with open(pdb_path, 'r') as f:
+            text = f.read()
+    except OSError:
+        return []
+    if not text.strip():
+        return []
+
+    keep_prefixes = ('ATOM', 'HETATM', 'TER', 'CONECT')
+    models: List[str] = []
+    current: List[str] = []
+    in_model = False
+    saw_model = False
+    for line in text.splitlines():
+        rec = line[:6].strip()
+        if rec == 'MODEL':
+            saw_model = True
+            in_model = True
+            current = []
+        elif rec == 'ENDMDL':
+            models.append('\n'.join(current))
+            in_model = False
+            current = []
+        elif line.startswith(keep_prefixes):
+            if in_model or not saw_model:
+                current.append(line)
+    # No MODEL wrapper at all → single implicit model from collected lines.
+    if not saw_model and current:
+        models.append('\n'.join(current))
+    return [m for m in models if m.strip()]
 
 
 def _fix_split_sdf_blocks(content: str) -> str:
@@ -1305,12 +1351,20 @@ class GninaDockingEngine:
         autobox_add: float = 4.0,
         seed: int = 666,
         job_id: str = '',
+        flexdist_ligand: Optional[str] = None,
+        flexdist: Optional[float] = None,
+        out_flex_path: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Run GNINA docking on a specific GPU.
 
         Binding site is defined either by reference_path (autobox) OR by
         center + size. Exactly one of those must be provided.
+
+        Flexible docking: pass flexdist_ligand + flexdist to let side chains
+        within `flexdist` Å of that ligand move during docking. The moved
+        residue conformers (one per output pose, in lockstep with output_path)
+        are written to out_flex_path as multi-MODEL PDB.
 
         Returns:
             Tuple of (success: bool, message: str)
@@ -1345,6 +1399,15 @@ class GninaDockingEngine:
             '--cpu', str(CPU_PER_GPU),
             '--seed', str(seed)
         ]
+
+        # Flexible docking: make near-ligand side chains movable and capture them.
+        if flexdist_ligand and flexdist is not None:
+            cmd += ['--flexdist_ligand', flexdist_ligand,
+                    '--flexdist', str(flexdist)]
+            # Cap flexible residues so runtime/output stay bounded for big pockets.
+            cmd += ['--flex_max', str(FLEX_MAX_RESIDUES)]
+            if out_flex_path:
+                cmd += ['--out_flex', out_flex_path]
 
         # GNINA v1.3.2 Torch backend ignores --device; use CUDA_VISIBLE_DEVICES instead
         env = os.environ.copy()
@@ -1548,12 +1611,16 @@ class DockingJobProcessor:
         size: Optional[Tuple[float, float, float]] = None,
         session_name: str = '',
         sort_by: str = 'minimizedAffinity',
+        flex_blocks: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """
         Generate a PyMOL session (.pse) from the docked SDF output.
 
         Each unique ligand becomes one multi-state PyMOL object (one state per pose),
         so the user can cycle through poses with PyMOL's state controls.
+        For flexible docking, `flex_blocks` maps each pose's <FlexPoseID> to its
+        moved side-chain PDB; a parallel multi-state `{obj}_flex` object is built so
+        the flexed residues track the ligand's pose state.
         Pose files are written from the raw SDF text — never through SDWriter —
         to avoid bond-table corruption.
 
@@ -1597,7 +1664,10 @@ class DockingJobProcessor:
         # Write one SDF per ligand (all poses → multi-state object in PyMOL).
         # Sort each ligand's poses by minimizedAffinity (lower = better) so that
         # state 1 is always the best pose for that ligand.
+        # For flexible docking, write a parallel multi-MODEL PDB of the moved side
+        # chains in the same pose order so flex state N tracks ligand state N.
         ligand_entries = []  # (pymol_obj_name, sdf_path)
+        flex_entries = []    # (pymol_obj_name, flex_pdb_path)
         for mol_name, blocks in ligand_blocks.items():
             blocks.sort(key=_block_score)
             obj_name = _pymol_name(mol_name)
@@ -1607,6 +1677,19 @@ class DockingJobProcessor:
                     f.write(b.rstrip('\r\n ') + '\n$$$$\n')
             ligand_entries.append((obj_name, lig_sdf))
 
+            if flex_blocks:
+                flex_models = []
+                for b in blocks:
+                    pid = self._pose_flex_id(b)
+                    if pid and flex_blocks.get(pid):
+                        flex_models.append(flex_blocks[pid])
+                if flex_models:
+                    flex_pdb = os.path.join(pymol_dir, f'{obj_name}_flex.pdb')
+                    with open(flex_pdb, 'w') as f:
+                        for n, fm in enumerate(flex_models, start=1):
+                            f.write(f"MODEL     {n:>4}\n{fm.rstrip(chr(10))}\nENDMDL\n")
+                    flex_entries.append((obj_name, flex_pdb))
+
         # Build PyMOL Python script
         load_cmds = '\n'.join(
             f"cmd.load(r'{sdf}', '{obj}')\n"
@@ -1615,6 +1698,21 @@ class DockingJobProcessor:
             for obj, sdf in ligand_entries
         )
         ligand_obj_list = ', '.join(f"'{obj}'" for obj, _ in ligand_entries)
+
+        # Flexible-docking side chains: orange-carbon sticks, multi-state (tracks pose).
+        if flex_entries:
+            flex_load_cmds = "# --- Flexed receptor side chains (orange carbons) ---\n" + '\n'.join(
+                f"cmd.load(r'{pdb}', '{obj}_flex')\n"
+                f"cmd.show('sticks', '{obj}_flex')\n"
+                f"cmd.hide('nonbonded', '{obj}_flex')\n"
+                f"cmd.color('orange', '{obj}_flex and elem C')\n"
+                f"cmd.color('atomic', '{obj}_flex and not elem C')\n"
+                f"cmd.hide('sticks', '{obj}_flex and hydro and (neighbor (elem C))')\n"
+                f"cmd.set('all_states', 0, '{obj}_flex')"
+                for obj, pdb in flex_entries
+            )
+        else:
+            flex_load_cmds = "# (no flexible side chains)"
 
         if reference_path:
             site_block = (
@@ -1673,6 +1771,8 @@ cmd.delete('cofactors')
 ligand_objs = [{ligand_obj_list}]
 for obj in ligand_objs:
     cmd.hide('sticks', obj + ' and hydro and (neighbor (elem C))')
+
+{flex_load_cmds}
 
 # --- Binding-site residues within 5 Å of any docked pose: lines + labels ---
 # Restrict to polymer atoms so cofactor sticks aren't overdrawn as lines/surface.
@@ -1734,13 +1834,21 @@ cmd.quit()
         num_poses: int = 9,
         exhaustiveness: int = 8,
         cnn_scoring: str = 'rescore',
-        seed: int = 666
-    ) -> str:
+        seed: int = 666,
+        flexdist_ligand: Optional[str] = None,
+        flexdist: Optional[float] = None,
+    ) -> Tuple[str, Optional[str]]:
         """
         Run docking job with GPU load balancing.
-        
-        Returns: Path to merged results file
+
+        When flexdist_ligand + flexdist are given, side chains near that ligand
+        flex during docking and their moved conformers are captured. Each pose
+        in the merged SDF is tagged with a <FlexPoseID> field, and a sidecar
+        JSON mapping that ID to the flex residue PDB block is written.
+
+        Returns: (merged_results_sdf, flex_blocks_json | None)
         """
+        flex_enabled = bool(flexdist_ligand and flexdist is not None)
         await self.update_progress(
             job_id,
             status=JobStatus.DOCKING,
@@ -1776,26 +1884,28 @@ cmd.quit()
         
         gpu_tasks = []
         output_files = []
-        
+        flex_files = []  # parallel to output_files; per-GPU out_flex PDBs (or None)
+
         for i in range(num_gpus_to_use):
             gpu_id = DOCK_GPU_IDS[i]
             start_idx = i * mols_per_gpu
             end_idx = min(start_idx + mols_per_gpu, total_mols)
-            
+
             if start_idx >= total_mols:
                 break
-            
+
             batch_blocks = mol_blocks[start_idx:end_idx]
-            
+
             # Write batch to file (text-based, preserving original format)
             batch_path = os.path.join(output_dir, f"ligands_gpu{gpu_id}.sdf")
             output_path = os.path.join(output_dir, f"docked_gpu{gpu_id}.sdf")
-            
+            flex_path = os.path.join(output_dir, f"flex_gpu{gpu_id}.pdb") if flex_enabled else None
+
             with open(batch_path, 'w') as f:
                 f.write(''.join(batch_blocks))
-            
+
             logger.info(f"GPU {gpu_id}: {len(batch_blocks)} ligands written to {batch_path}")
-            
+
             # Create docking task
             task = self.engine.dock_batch(
                 receptor_path=receptor_path,
@@ -1810,9 +1920,13 @@ cmd.quit()
                 cnn_scoring=cnn_scoring,
                 seed=seed,
                 job_id=job_id,
+                flexdist_ligand=flexdist_ligand,
+                flexdist=flexdist,
+                out_flex_path=flex_path,
             )
             gpu_tasks.append(task)
             output_files.append(output_path)
+            flex_files.append(flex_path)
         
         await self.update_progress(
             job_id,
@@ -1870,24 +1984,59 @@ cmd.quit()
             message="Merging results..."
         )
         
-        # Merge output files
+        # Merge output files. For flexible docking, tag each pose with a unique
+        # <FlexPoseID> and collect the matching out_flex residue block so the two
+        # can be re-associated after pH correction and score sorting reorder poses.
         merged_path = os.path.join(output_dir, "docked_merged.sdf")
+        flex_by_id: Dict[str, str] = {}
         total_poses = 0
         with open(merged_path, 'w') as outfile:
-            for out_path in output_files:
-                if os.path.exists(out_path):
-                    with open(out_path, 'r') as infile:
-                        content = infile.read()
-                        poses_in_file = content.count('$$$$')
-                        logger.info(f"Merging {out_path}: {poses_in_file} poses")
-                        total_poses += poses_in_file
-                        outfile.write(content)
-                else:
+            for out_path, flex_path in zip(output_files, flex_files):
+                if not os.path.exists(out_path):
                     logger.warning(f"Output file not found: {out_path}")
-        
+                    continue
+                with open(out_path, 'r') as infile:
+                    content = infile.read()
+
+                if not flex_enabled:
+                    poses_in_file = content.count('$$$$')
+                    logger.info(f"Merging {out_path}: {poses_in_file} poses")
+                    total_poses += poses_in_file
+                    outfile.write(content)
+                    continue
+
+                # Merge GNINA's split structure/property blocks first so each pose
+                # is a single $$$$ block, then associate one flex model per pose.
+                content = _fix_split_sdf_blocks(content)
+                pose_blocks = [b for b in content.split('$$$$') if b.strip()]
+                gpu_tag = os.path.basename(out_path).replace('docked_', '').replace('.sdf', '')
+                flex_models = _split_pdb_models(flex_path) if flex_path else []
+                if flex_models and len(flex_models) != len(pose_blocks):
+                    logger.warning(
+                        f"Flex/pose count mismatch for {gpu_tag}: "
+                        f"{len(flex_models)} flex models vs {len(pose_blocks)} poses — "
+                        f"associating by position, extras dropped"
+                    )
+                for idx, block in enumerate(pose_blocks):
+                    pose_id = f"{gpu_tag}_{idx}"
+                    base = block.strip().rstrip('\r\n ')
+                    outfile.write(base + f'\n\n> <FlexPoseID>\n{pose_id}\n\n$$$$\n')
+                    if idx < len(flex_models):
+                        flex_by_id[pose_id] = flex_models[idx]
+                    total_poses += 1
+                logger.info(f"Merging {out_path}: {len(pose_blocks)} poses, "
+                            f"{len(flex_models)} flex models")
+
         logger.info(f"Merged total: {total_poses} poses")
-        
-        return merged_path
+
+        flex_map_path = None
+        if flex_enabled and flex_by_id:
+            flex_map_path = os.path.join(output_dir, "flex_blocks.json")
+            with open(flex_map_path, 'w') as f:
+                json.dump(flex_by_id, f)
+            logger.info(f"Captured {len(flex_by_id)} flex residue blocks → {flex_map_path}")
+
+        return merged_path, flex_map_path
     
     def sort_and_filter_results(
         self,
@@ -2061,6 +2210,40 @@ cmd.quit()
 
         logger.info(f"Wrote {len(poses)} poses to {output_path}")
         return len(poses)
+
+    @staticmethod
+    def _pose_flex_id(block: str) -> Optional[str]:
+        """Extract the <FlexPoseID> data field from an SDF pose block, if present."""
+        m = re.search(r'>\s*<FlexPoseID>\s*\n\s*(\S+)', block)
+        return m.group(1) if m else None
+
+    def build_flex_pdb(self, final_sdf: str, flex_blocks: Dict[str, str],
+                       output_path: str) -> int:
+        """
+        Write the flexed side chains as a multi-MODEL PDB aligned with the final,
+        score-sorted poses: MODEL N holds the moved residues for pose N in
+        `final_sdf`. Each pose carries a <FlexPoseID> field linking it to a block
+        in `flex_blocks`. Returns the number of MODELs written.
+        """
+        with open(final_sdf) as f:
+            blocks = [b for b in f.read().split('$$$$') if b.strip()]
+
+        models_written = 0
+        with open(output_path, 'w') as out:
+            out.write("REMARK  Flexible receptor side chains from GNINA flexible docking\n")
+            out.write("REMARK  MODEL n corresponds to pose n in the results SDF\n")
+            for i, block in enumerate(blocks, start=1):
+                pose_id = self._pose_flex_id(block)
+                flex = flex_blocks.get(pose_id) if pose_id else None
+                if not flex:
+                    continue
+                lig_name = block.strip().split('\n')[0].strip() or 'pose'
+                out.write(f"MODEL     {i:>4}\n")
+                out.write(f"REMARK    ligand={lig_name} FlexPoseID={pose_id}\n")
+                out.write(flex.rstrip('\n') + '\n')
+                out.write("ENDMDL\n")
+                models_written += 1
+        return models_written
 
     def add_mcs_rmsd(self, sdf_path: str, reference_path: str) -> int:
         """
@@ -2677,6 +2860,8 @@ async def dock_molecules(
     exhaustiveness: int = Form(8, ge=1, le=64, description="Search exhaustiveness"),
     cnn_scoring: Literal['rescore', 'refine', 'score_only', 'none'] = Form('rescore'),
     seed: int = Form(666),
+    flexible: bool = Form(False, description="Flexible docking: flex side chains near the reference ligand"),
+    flexdist: float = Form(3.5, ge=0, le=10, description="Side chains within this many Å of the reference ligand flex"),
     sort_by: Literal['minimizedAffinity', 'CNNscore', 'CNNaffinity', 'CNN_VS'] = Form('minimizedAffinity'),
     generate_pymol: bool = Form(False),
     mcs_rmsd: bool = Form(False),
@@ -2718,6 +2903,15 @@ async def dock_molecules(
         raise HTTPException(
             400,
             "Provide only one binding-site source: reference ligand, residue list, or xyz coordinates"
+        )
+
+    # Flexible docking reuses the reference ligand as the flexdist ligand, so it
+    # is only available in reference-ligand mode.
+    if flexible and not has_reference:
+        raise HTTPException(
+            400,
+            "Flexible docking requires the reference-ligand binding-site mode "
+            "(the reference ligand defines which side chains flex)."
         )
 
     has_file = ligand_file is not None and ligand_file.filename
@@ -2904,9 +3098,10 @@ async def dock_molecules(
             active_jobs[job_id].total_ligands = mol_count
             logger.info(f"SDF preparation complete: {mol_count} molecules ready for docking")
         
-        # Run docking
+        # Run docking. Flexible docking reuses the reference ligand to choose
+        # which side chains flex (flexdist_ligand == autobox_ligand).
         dock_start = datetime.now()
-        docked_path = await job_processor.run_docking_job(
+        docked_path, flex_map_path = await job_processor.run_docking_job(
             job_id=job_id,
             receptor_path=str(receptor_path),
             reference_path=str(reference_path) if reference_path else None,
@@ -2917,7 +3112,9 @@ async def dock_molecules(
             num_poses=num_poses,
             exhaustiveness=exhaustiveness,
             cnn_scoring=cnn_scoring,
-            seed=seed
+            seed=seed,
+            flexdist_ligand=str(reference_path) if (flexible and reference_path) else None,
+            flexdist=flexdist if flexible else None,
         )
         active_jobs[job_id].timings['docking'] = (datetime.now() - dock_start).total_seconds()
         
@@ -2956,6 +3153,23 @@ async def dock_molecules(
 
         if num_poses_out == 0:
             raise HTTPException(500, "Docking produced no poses. Check server logs for GPU errors.")
+
+        # Flexible docking: build a pose-ordered PDB of the moved side chains
+        # (MODEL N ↔ pose N in docking_results.sdf) for download.
+        flex_blocks: Dict[str, str] = {}
+        flex_pdb_path: Optional[Path] = None
+        if flexible and flex_map_path and os.path.exists(flex_map_path):
+            with open(flex_map_path) as _f:
+                flex_blocks = json.load(_f)
+            flex_pdb_path = work_dir / "flex_residues.pdb"
+            n_flex = job_processor.build_flex_pdb(
+                final_sdf=str(final_path),
+                flex_blocks=flex_blocks,
+                output_path=str(flex_pdb_path),
+            )
+            logger.info(f"Job {job_id}: wrote {n_flex} flex residue models → {flex_pdb_path}")
+            if n_flex == 0:
+                flex_pdb_path = None
 
         # Optional MCS RMSD annotation (requires reference ligand)
         if mcs_rmsd and reference_path:
@@ -3016,6 +3230,7 @@ async def dock_molecules(
                 docking_results_sdf=str(final_path),
                 session_name=session_name,
                 sort_by=sort_by,
+                flex_blocks=flex_blocks if flexible else None,
             )
 
         total_time = (datetime.now() - start_time).total_seconds()
@@ -3039,11 +3254,16 @@ async def dock_molecules(
 
         stem = session_name if session_name else f"docking_{job_id}"
 
-        if pse_path:
+        # Bundle a zip when there are extra artifacts (PyMOL session and/or the
+        # flexible-docking side-chain PDB) to ship alongside the results SDF.
+        if pse_path or flex_pdb_path:
             zip_path = work_dir / f"{stem}.zip"
             with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
                 zf.write(str(final_path), f"{stem}.sdf")
-                zf.write(pse_path, f"{stem}.pse")
+                if pse_path:
+                    zf.write(pse_path, f"{stem}.pse")
+                if flex_pdb_path:
+                    zf.write(str(flex_pdb_path), f"{stem}_flex.pdb")
             active_jobs[job_id].result_zip = str(zip_path)
             resp = FileResponse(
                 path=str(zip_path),

@@ -969,6 +969,17 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                             PoseBusters Validation
                         </label>
                     </div>
+                    <div class="form-group">
+                        <label title="Flexible docking: side chains within the cutoff of the reference ligand are allowed to move during docking (reference-ligand mode only)">
+                            <input type="checkbox" name="flexible" id="flexibleCheck" value="true">
+                            Flexible Side-Chain Docking
+                        </label>
+                    </div>
+                    <div class="form-group" id="flexdistGroup" style="display:none;">
+                        <label title="Side chains with any atom within this distance (Å) of the reference ligand are made flexible">Flex Distance (Å)</label>
+                        <input type="number" name="flexdist" id="flexdist" value="3.5" step="0.5" min="0" max="10">
+                        <div class="help-text">Residues within this distance of the reference ligand flex. The moved side chains are written to <code>&lt;name&gt;_flex.pdb</code> and shown in the PyMOL session.</div>
+                    </div>
                 </div>
 
 
@@ -1286,7 +1297,9 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
         const alertError = document.getElementById('alertError');
         const alertSuccess = document.getElementById('alertSuccess');
 
-        const REF_ONLY_OPTIONS = ['mcs_rmsd', 'shape_sim', 'ref_sim', 'plif_sim'];
+        // Options that only make sense with a reference ligand (flexible docking
+        // reuses the reference as its flexdist ligand).
+        const REF_ONLY_OPTIONS = ['mcs_rmsd', 'shape_sim', 'ref_sim', 'plif_sim', 'flexible'];
         function applySiteMode() {
             const refMode = currentSiteMode === 'reference';
             document.getElementById('siteReferenceSection').style.display = currentSiteMode === 'reference' ? 'block' : 'none';
@@ -1300,7 +1313,16 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 const lbl = cb.closest('label');
                 if (lbl) lbl.style.opacity = refMode ? '' : '0.5';
             });
+            applyFlexState();
         }
+
+        // Show the flex-distance field only when flexible docking is checked.
+        function applyFlexState() {
+            const cb = document.getElementById('flexibleCheck');
+            const grp = document.getElementById('flexdistGroup');
+            if (cb && grp) grp.style.display = (cb.checked && !cb.disabled) ? '' : 'none';
+        }
+        document.getElementById('flexibleCheck').addEventListener('change', applyFlexState);
 
         // Toggle ligand-input mode (SMILES vs SDF)
         document.querySelectorAll('.toggle-btn[data-input]').forEach(btn => {
