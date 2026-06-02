@@ -220,6 +220,59 @@ def _element_vdw(element: str) -> float:
     return _VDW_RADII_NM.get(element.upper(), _DEFAULT_VDW_NM)
 
 
+# Periodic-table symbols (upper-case) for validating PDB element fields.
+_ELEMENT_SYMBOLS = frozenset({
+    'H','HE','LI','BE','B','C','N','O','F','NE','NA','MG','AL','SI','P','S','CL',
+    'AR','K','CA','SC','TI','V','CR','MN','FE','CO','NI','CU','ZN','GA','GE','AS',
+    'SE','BR','KR','RB','SR','Y','ZR','NB','MO','TC','RU','RH','PD','AG','CD','IN',
+    'SN','SB','TE','I','XE','CS','BA','LA','CE','PR','ND','PM','SM','EU','GD','TB',
+    'DY','HO','ER','TM','YB','LU','HF','TA','W','RE','OS','IR','PT','AU','HG','TL',
+    'PB','BI','PO','AT','RN',
+})
+
+
+def _element_from_atom_name(name_field: str) -> str:
+    """Best-effort element symbol from a PDB atom-name field (cols 13-16)."""
+    letters = ''.join(c for c in name_field if c.isalpha()).upper()
+    if not letters:
+        return ''
+    # Two-letter element only when the name starts in col 13 (heavy-atom convention).
+    if len(letters) >= 2 and letters[:2] in _ELEMENT_SYMBOLS and name_field[:1] != ' ':
+        return letters[:2].capitalize()
+    return letters[:1].capitalize()
+
+
+def _normalize_pdb_element_columns(pdb_path: Path) -> None:
+    """Rewrite the element column (cols 77-78) of every ATOM/HETATM record.
+
+    BioPython's PDBIO writes records one column short on some inputs, leaving
+    the element symbol left-justified in col 77 instead of right-justified in
+    cols 77-78.  OpenBabel then ignores the malformed field and guesses the
+    element from the 2-character atom name — turning hydroxyl hydrogens named
+    'HO*' into Holmium (Ho) and producing a garbled, disconnected ligand.
+
+    Columns 1-66 (record through B-factor) are stable regardless of the shift,
+    so we keep them verbatim and re-emit a standards-compliant trailer with the
+    element right-justified in cols 77-78.  The element is taken from whichever
+    candidate field holds a valid symbol (standard or shifted), falling back to
+    the atom name.
+    """
+    out_lines = []
+    for line in pdb_path.read_text().splitlines():
+        if line[:6] in ('ATOM  ', 'HETATM'):
+            element = ''
+            for a, b in ((76, 78), (75, 77)):  # standard, then 1-col left-shift
+                cand = line[a:b].strip().upper()
+                if cand in _ELEMENT_SYMBOLS:
+                    element = cand.capitalize()
+                    break
+            if not element:
+                element = _element_from_atom_name(line[12:16])
+            line = line[:66].ljust(66) + ' ' * 10 + element.rjust(2)
+        out_lines.append(line)
+    pdb_path.write_text('\n'.join(out_lines) + '\n')
+
+
 def _rotate_around_axis(pos, p1, p2):
     """Rotate *pos* (numpy array) by 180° around the axis p1→p2.
 
@@ -604,6 +657,10 @@ def step_clean(input_pdb: Path, output_pdb: Path,
     pdb_io.save(str(output_pdb),
                 _ChainSelector(chains=chains, keep_resnames=keep_het,
                                structure=struct))
+    # BioPython's PDBIO can emit a misaligned element column on some inputs,
+    # which makes OpenBabel misread atoms like 'HO*' (hydroxyl H) as Holmium
+    # and garble the extracted ligand.  Normalise cols 77-78 to be safe.
+    _normalize_pdb_element_columns(output_pdb)
     return info
 
 
