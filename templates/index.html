@@ -980,6 +980,28 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                         <input type="number" name="flexdist" id="flexdist" value="3.5" step="0.5" min="0" max="10">
                         <div class="help-text">Residues within this distance of the reference ligand flex. The moved side chains are written to <code>&lt;name&gt;_flex.pdb</code> and shown in the PyMOL session.</div>
                     </div>
+                    <div class="form-group">
+                        <label title="Covalent docking: tether the ligand reactive atom to a receptor residue atom (e.g. a Cys SG) during docking">
+                            <input type="checkbox" name="covalent" id="covalentCheck" value="true">
+                            Covalent Docking
+                        </label>
+                    </div>
+                    <div class="form-group" id="covalentGroup" style="display:none;">
+                        <label>Reacting Receptor Residue</label>
+                        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                            <input type="text" name="covalent_chain" id="covalentChain" placeholder="Chain (e.g. A)" style="flex:1; min-width:5rem;">
+                            <input type="text" name="covalent_resnum" id="covalentResnum" placeholder="Residue # (e.g. 145)" style="flex:1; min-width:6rem;">
+                            <input type="text" name="covalent_atom" id="covalentAtom" value="SG" placeholder="Atom (e.g. SG)" style="flex:1; min-width:5rem;">
+                        </div>
+                        <div class="help-text">The receptor atom the ligand binds to, as chain:residue:atom. Defaults to <code>SG</code> (cysteine sulfur). Leave chain blank for single-chain receptors.</div>
+                        <label style="margin-top:0.6rem;" title="SMARTS pattern matching the reactive atom in your ligand(s)">Ligand Reactive Atom (SMARTS)</label>
+                        <input type="text" name="covalent_smarts" id="covalentSmarts" placeholder="e.g. C=O  or  [C;H2][Cl]">
+                        <div class="help-text">SMARTS matching the ligand atom that forms the covalent bond (the first matched atom is tethered). e.g. <code>C=O</code> for an acrylamide/warhead carbon.</div>
+                        <label style="margin-top:0.6rem;">
+                            <input type="checkbox" name="covalent_optimize" id="covalentOptimize" value="true" checked>
+                            UFF-optimize covalent complex
+                        </label>
+                    </div>
                 </div>
 
 
@@ -1323,6 +1345,14 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             if (cb && grp) grp.style.display = (cb.checked && !cb.disabled) ? '' : 'none';
         }
         document.getElementById('flexibleCheck').addEventListener('change', applyFlexState);
+
+        // Show the covalent-docking fields only when covalent docking is checked.
+        function applyCovalentState() {
+            const cb = document.getElementById('covalentCheck');
+            const grp = document.getElementById('covalentGroup');
+            if (cb && grp) grp.style.display = cb.checked ? '' : 'none';
+        }
+        document.getElementById('covalentCheck').addEventListener('change', applyCovalentState);
 
         // Toggle ligand-input mode (SMILES vs SDF)
         document.querySelectorAll('.toggle-btn[data-input]').forEach(btn => {

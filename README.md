@@ -8,6 +8,7 @@ A FastAPI-based web application for structure-based molecular docking using [GNI
 - **Automatic 2D→3D conversion**: OpenBabel-based 3D coordinate generation and protonation at target pH
 - **Multi-GPU docking**: Auto-detects all CUDA devices via `nvidia-smi` and load-balances ligands across them via `CUDA_VISIBLE_DEVICES`. Override the device list with the `DOCK_GPUS` env var (e.g. `DOCK_GPUS=0,1` to skip a slow card).
 - **Flexible side-chain docking**: Optional. In reference-ligand mode, side chains with any atom within a configurable cutoff (default 3.5 Å) of the reference ligand are allowed to move during docking (gnina `--flexdist_ligand`/`--flexdist`, capped by `FLEX_MAX_RESIDUES`, default 8). The moved side chains are exported as a pose-ordered multi-MODEL `{session}_flex.pdb` (MODEL *n* ↔ pose *n* in the results SDF) and rendered as orange-carbon sticks in the PyMOL session, tracking each ligand's pose state.
+- **Covalent docking**: Optional. Tethers the ligand atom matched by a user-supplied SMARTS pattern to a named receptor atom (`chain:residue:atom`, default atom `SG` for cysteine) during docking (gnina `--covalent_rec_atom`/`--covalent_lig_atom_pattern`). The covalent ligand+residue complex is UFF-optimized by default (`--covalent_optimize_lig`). Works with any binding-site mode.
 - **Real-time progress**: WebSocket-based live updates during prep and docking, including a per-ligand counter and live ETA. The docking phase counts completed poses by polling each GPU's incremental SDF output every 2 s.
 - **24-hour re-download window**: Successful job artifacts (SDF + PyMOL ZIP) are retained on the server for 24 h after completion (5 min after failure), then auto-deleted. The completion message exposes a re-download link valid for that window.
 - **Optional post-processing** (per pose, written as SDF fields):
@@ -106,6 +107,7 @@ journalctl -u gnina-webapp -f
 | Exhaustiveness | GNINA search exhaustiveness (1–64) |
 | CNN scoring | GNINA CNN scoring mode |
 | Flexible side-chain docking | Optional (reference-ligand mode only). Flexes side chains within **Flex Distance** (Å, default 3.5) of the reference ligand. |
+| Covalent docking | Optional. Tethers the ligand reactive atom (a **SMARTS** pattern) to a **reacting receptor residue** (chain / residue # / atom name, default `SG`). UFF-optimizes the complex by default. |
 
 ### Outputs
 A ZIP file containing:

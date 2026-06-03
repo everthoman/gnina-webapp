@@ -1354,6 +1354,9 @@ class GninaDockingEngine:
         flexdist_ligand: Optional[str] = None,
         flexdist: Optional[float] = None,
         out_flex_path: Optional[str] = None,
+        covalent_rec_atom: Optional[str] = None,
+        covalent_lig_atom_pattern: Optional[str] = None,
+        covalent_optimize_lig: bool = True,
     ) -> Tuple[bool, str]:
         """
         Run GNINA docking on a specific GPU.
@@ -1365,6 +1368,10 @@ class GninaDockingEngine:
         within `flexdist` Å of that ligand move during docking. The moved
         residue conformers (one per output pose, in lockstep with output_path)
         are written to out_flex_path as multi-MODEL PDB.
+
+        Covalent docking: pass covalent_rec_atom (chain:resnum:atom_name) plus
+        covalent_lig_atom_pattern (a SMARTS matching the ligand's reactive atom)
+        to tether that ligand atom to the receptor atom during docking.
 
         Returns:
             Tuple of (success: bool, message: str)
@@ -1408,6 +1415,14 @@ class GninaDockingEngine:
             cmd += ['--flex_max', str(FLEX_MAX_RESIDUES)]
             if out_flex_path:
                 cmd += ['--out_flex', out_flex_path]
+
+        # Covalent docking: tether the ligand atom matching the SMARTS pattern to
+        # the named receptor atom (chain:resnum:atom_name).
+        if covalent_rec_atom and covalent_lig_atom_pattern:
+            cmd += ['--covalent_rec_atom', covalent_rec_atom,
+                    '--covalent_lig_atom_pattern', covalent_lig_atom_pattern]
+            if covalent_optimize_lig:
+                cmd += ['--covalent_optimize_lig']
 
         # GNINA v1.3.2 Torch backend ignores --device; use CUDA_VISIBLE_DEVICES instead
         env = os.environ.copy()
@@ -1837,6 +1852,9 @@ cmd.quit()
         seed: int = 666,
         flexdist_ligand: Optional[str] = None,
         flexdist: Optional[float] = None,
+        covalent_rec_atom: Optional[str] = None,
+        covalent_lig_atom_pattern: Optional[str] = None,
+        covalent_optimize_lig: bool = True,
     ) -> Tuple[str, Optional[str]]:
         """
         Run docking job with GPU load balancing.
@@ -1845,6 +1863,9 @@ cmd.quit()
         flex during docking and their moved conformers are captured. Each pose
         in the merged SDF is tagged with a <FlexPoseID> field, and a sidecar
         JSON mapping that ID to the flex residue PDB block is written.
+
+        When covalent_rec_atom + covalent_lig_atom_pattern are given, each ligand
+        is covalently tethered to the named receptor atom during docking.
 
         Returns: (merged_results_sdf, flex_blocks_json | None)
         """
@@ -1923,6 +1944,9 @@ cmd.quit()
                 flexdist_ligand=flexdist_ligand,
                 flexdist=flexdist,
                 out_flex_path=flex_path,
+                covalent_rec_atom=covalent_rec_atom,
+                covalent_lig_atom_pattern=covalent_lig_atom_pattern,
+                covalent_optimize_lig=covalent_optimize_lig,
             )
             gpu_tasks.append(task)
             output_files.append(output_path)
@@ -2862,6 +2886,12 @@ async def dock_molecules(
     seed: int = Form(666),
     flexible: bool = Form(False, description="Flexible docking: flex side chains near the reference ligand"),
     flexdist: float = Form(3.5, ge=0, le=10, description="Side chains within this many Å of the reference ligand flex"),
+    covalent: bool = Form(False, description="Covalent docking: tether the ligand reactive atom to a receptor residue atom"),
+    covalent_chain: Optional[str] = Form(None, description="Chain ID of the reacting receptor residue (e.g. A)"),
+    covalent_resnum: Optional[str] = Form(None, description="Residue number of the reacting receptor residue"),
+    covalent_atom: str = Form('SG', description="Atom name of the reacting receptor residue (e.g. SG for Cys)"),
+    covalent_smarts: Optional[str] = Form(None, description="SMARTS matching the ligand reactive atom (e.g. [C,c]=O)"),
+    covalent_optimize: bool = Form(True, description="UFF-optimize the covalent ligand+residue complex"),
     sort_by: Literal['minimizedAffinity', 'CNNscore', 'CNNaffinity', 'CNN_VS'] = Form('minimizedAffinity'),
     generate_pymol: bool = Form(False),
     mcs_rmsd: bool = Form(False),
@@ -2913,6 +2943,27 @@ async def dock_molecules(
             "Flexible docking requires the reference-ligand binding-site mode "
             "(the reference ligand defines which side chains flex)."
         )
+
+    # Covalent docking: build the receptor atom spec (chain:resnum:atom_name)
+    # and validate the SMARTS pattern for the ligand reactive atom.
+    covalent_rec_atom: Optional[str] = None
+    if covalent:
+        resnum = (covalent_resnum or '').strip()
+        chain = (covalent_chain or '').strip()
+        atom = (covalent_atom or '').strip() or 'SG'
+        smarts = (covalent_smarts or '').strip()
+        if not resnum:
+            raise HTTPException(400, "Covalent docking requires the reacting residue number")
+        if not smarts:
+            raise HTTPException(
+                400,
+                "Covalent docking requires a SMARTS pattern for the ligand reactive atom"
+            )
+        if Chem.MolFromSmarts(smarts) is None:
+            raise HTTPException(400, f"Invalid covalent SMARTS pattern: {smarts!r}")
+        # gnina expects chain:resnum:atom_name; the chain may be blank for
+        # single-chain receptors.
+        covalent_rec_atom = f"{chain}:{resnum}:{atom}"
 
     has_file = ligand_file is not None and ligand_file.filename
     has_smiles = ligand_smiles is not None and ligand_smiles.strip()
@@ -3115,6 +3166,9 @@ async def dock_molecules(
             seed=seed,
             flexdist_ligand=str(reference_path) if (flexible and reference_path) else None,
             flexdist=flexdist if flexible else None,
+            covalent_rec_atom=covalent_rec_atom,
+            covalent_lig_atom_pattern=covalent_smarts.strip() if covalent else None,
+            covalent_optimize_lig=covalent_optimize,
         )
         active_jobs[job_id].timings['docking'] = (datetime.now() - dock_start).total_seconds()
         
