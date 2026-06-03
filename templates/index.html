@@ -784,7 +784,7 @@
                     <span style="font-size:0.85rem; color:var(--text-muted);">💾 Save for reuse:</span>
                     <input type="text" id="saveAsName" placeholder="Structure name">
                     <button type="button" class="btn-save-struct" onclick="saveCurrentStructure()">Save in browser</button>
-                    <button type="button" class="btn-save-struct" onclick="downloadPreparedFiles()" title="Download prepared PDB and reference SDF to disk">⬇ Download files</button>
+                    <button type="button" class="btn-save-struct" onclick="downloadPreparedFiles()" title="Download prepared PDB + reference SDF as a single .zip (or just the PDB for apo)">⬇ Download files</button>
                     <span id="saveAsStatus" style="font-size:0.8rem;"></span>
                 </div>
             </div>
@@ -1758,10 +1758,64 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
             URL.revokeObjectURL(url);
         }
 
+        function _crc32(bytes) {
+            let crc = 0xFFFFFFFF;
+            for (let i = 0; i < bytes.length; i++) {
+                let c = (crc ^ bytes[i]) & 0xFF;
+                for (let k = 0; k < 8; k++) c = (c & 1) ? (c >>> 1) ^ 0xEDB88320 : c >>> 1;
+                crc = (crc >>> 8) ^ c;
+            }
+            return (crc ^ 0xFFFFFFFF) >>> 0;
+        }
+
+        // Build a minimal store-only (uncompressed) ZIP from [{name, bytes}].
+        // Avoids the browser dropping the 2nd of two back-to-back downloads.
+        function _makeZip(files) {
+            const enc = new TextEncoder();
+            const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+            const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+            const local = [], central = [];
+            let offset = 0;
+            for (const f of files) {
+                const nameBytes = enc.encode(f.name);
+                const crc = _crc32(f.bytes), size = f.bytes.length;
+                const header = new Uint8Array([].concat(
+                    u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+                    u32(crc), u32(size), u32(size), u16(nameBytes.length), u16(0)
+                ));
+                local.push(header, nameBytes, f.bytes);
+                central.push(new Uint8Array([].concat(
+                    u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+                    u32(crc), u32(size), u32(size), u16(nameBytes.length), u16(0), u16(0),
+                    u16(0), u16(0), u32(0), u32(offset)
+                )), nameBytes);
+                offset += header.length + nameBytes.length + size;
+            }
+            const cdSize = central.reduce((s, c) => s + c.length, 0);
+            const eocd = new Uint8Array([].concat(
+                u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+                u32(cdSize), u32(offset), u16(0)
+            ));
+            return new Blob([...local, ...central, eocd], { type: 'application/zip' });
+        }
+
         function downloadPreparedFiles() {
             const row = document.getElementById('saveAsRow');
-            if (row._pdb) _downloadB64(row._pdb.b64, row._pdb.name);
-            if (row._sdf) _downloadB64(row._sdf.b64, row._sdf.name);
+            if (!row._pdb) return;
+            // Only the receptor (apo) — a single file needs no zip.
+            if (!row._sdf) { _downloadB64(row._pdb.b64, row._pdb.name); return; }
+            const b2a = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            const blob = _makeZip([
+                { name: row._pdb.name, bytes: b2a(row._pdb.b64) },
+                { name: row._sdf.name, bytes: b2a(row._sdf.b64) },
+            ]);
+            const stem = (document.getElementById('saveAsName').value.trim()
+                || row._pdb.name.replace(/\.pdb$/i, '')) + '_prepared';
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = stem + '.zip';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function saveCurrentStructure() {
