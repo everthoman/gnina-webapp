@@ -1655,10 +1655,15 @@ class DockingJobProcessor:
         pse_filename = f'{session_name}.pse' if session_name else 'visualization.pse'
         pse_path = os.path.join(work_dir, pse_filename)
 
-        # Read output SDF and group blocks by molecule name (first line)
+        # Read output SDF and group blocks by molecule name (first line).
+        # Split on the '$$$$' delimiter *line* (consuming its trailing newline) so
+        # each block starts exactly at its title line — which may legitimately be
+        # empty for an unnamed ligand. Splitting on bare '$$$$' would leave that
+        # delimiter newline on the block; a later strip() would then swallow an
+        # empty title and mis-read the program line as the molecule name.
         with open(docking_results_sdf, 'r') as f:
             content = f.read()
-        raw_blocks = [b for b in content.split('$$$$') if b.strip()]
+        raw_blocks = [b for b in re.split(r'\$\$\$\$\r?\n?', content) if b.strip()]
 
         higher_is_better = sort_by in ('CNNscore', 'CNNaffinity', 'CNN_VS')
 
@@ -1673,7 +1678,9 @@ class DockingJobProcessor:
         from collections import defaultdict
         ligand_blocks: Dict[str, list] = defaultdict(list)
         for block in raw_blocks:
-            mol_name = block.strip().split('\n')[0].strip() or 'unknown'
+            # First line of the block is the SDF title line (do NOT strip the
+            # block first — that would drop an empty title and shift to line 2).
+            mol_name = block.split('\n', 1)[0].strip() or 'unknown'
             ligand_blocks[mol_name].append(block.strip())
 
         # Write one SDF per ligand (all poses → multi-state object in PyMOL).
@@ -3094,9 +3101,14 @@ async def dock_molecules(
             three_d_raw_path = work_dir / "ligands_3d_raw.sdf"
             if mols_3d:
                 writer_3d = Chem.SDWriter(str(three_d_raw_path))
-                for mol, _ in mols_3d:
+                for mol, name in mols_3d:
                     for prop in list(mol.GetPropsAsDict().keys()):
                         mol.ClearProp(prop)
+                    # Force the title to the resolved name (mol_<i> fallback for
+                    # nameless input molecules). Without this an untitled SDF
+                    # molecule keeps an empty title through docking, and the PyMOL
+                    # session can't build a separate object for it.
+                    mol.SetProp('_Name', name)
                     writer_3d.write(mol)
                 writer_3d.close()
                 # Adjust protonation at target pH (preserves heavy-atom 3D coordinates)
