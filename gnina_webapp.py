@@ -2323,18 +2323,26 @@ cmd.quit()
                     rmsd_str = 'N/A'
                 else:
                     mcs_mol = Chem.MolFromSmarts(mcs_result.smartsString)
-                    ref_match = ref_mol.GetSubstructMatch(mcs_mol)
-                    pose_match = pose_mol.GetSubstructMatch(mcs_mol)
+                    ref_matches = ref_mol.GetSubstructMatches(mcs_mol, uniquify=False)
+                    pose_matches = pose_mol.GetSubstructMatches(mcs_mol, uniquify=False)
 
-                    if not ref_match or not pose_match:
+                    if not ref_matches or not pose_matches:
                         rmsd_str = 'N/A'
                     else:
                         ref_conf = ref_mol.GetConformer()
                         pose_conf = pose_mol.GetConformer()
-                        ref_coords = np.array([list(ref_conf.GetAtomPosition(i)) for i in ref_match])
-                        pose_coords = np.array([list(pose_conf.GetAtomPosition(i)) for i in pose_match])
-                        rmsd = float(np.sqrt(((ref_coords - pose_coords) ** 2).sum(axis=1).mean()))
-                        rmsd_str = f'{rmsd:.4f}'
+                        # Try all mapping combinations; keep the minimum RMSD.
+                        # This handles symmetric substructures (e.g. para-rings)
+                        # where the first mapping found may not minimise RMSD.
+                        best_rmsd = float('inf')
+                        for ref_match in ref_matches:
+                            ref_coords = np.array([list(ref_conf.GetAtomPosition(i)) for i in ref_match])
+                            for pose_match in pose_matches:
+                                pose_coords = np.array([list(pose_conf.GetAtomPosition(i)) for i in pose_match])
+                                rmsd = float(np.sqrt(((ref_coords - pose_coords) ** 2).sum(axis=1).mean()))
+                                if rmsd < best_rmsd:
+                                    best_rmsd = rmsd
+                        rmsd_str = f'{best_rmsd:.4f}'
                         annotated += 1
 
             except Exception as e:
@@ -2464,12 +2472,13 @@ cmd.quit()
         logger.info("add_ref_sim: annotated %d/%d poses in %s", annotated, len(blocks), sdf_path)
         return annotated
 
-    def add_posebusters_flags(self, sdf_path: str) -> int:
+    def add_posebusters_flags(self, sdf_path: str, receptor_path: str) -> int:
         """
-        Annotates each pose in sdf_path with PB_failures — the count of PoseBusters
-        checks that failed (0 = all pass). Runs with config='mol' which covers
-        geometry checks (bond lengths, angles, planarity, internal clashes) without
-        requiring the receptor or reference ligand.
+        Annotates each pose in sdf_path with PB_Flags — the count of PoseBusters
+        checks that failed (0 = all pass). Runs with config='dock' which covers
+        internal geometry (bond lengths, angles, planarity, clashes within the
+        ligand) AND intermolecular checks against the receptor (protein-ligand
+        distance, volume overlap with protein/cofactors).
         Modifies sdf_path in-place. Returns number of poses successfully evaluated.
         """
         try:
@@ -2483,8 +2492,8 @@ cmd.quit()
         blocks = [b for b in content.split('$$$$') if b.strip()]
 
         try:
-            pb = PoseBusters(config='mol')
-            df = pb.bust(sdf_path, full_report=True)
+            pb = PoseBusters(config='dock')
+            df = pb.bust(sdf_path, mol_cond=receptor_path, full_report=True)
         except Exception as e:
             logger.error("add_posebusters_flags: PoseBusters failed: %s", e)
             return 0
@@ -3277,13 +3286,12 @@ async def dock_molecules(
             )
             job_processor.add_ref_sim(str(final_path), str(reference_path))
 
-        # Optional PoseBusters validation (no reference required)
         if posebusters:
             await job_processor.update_progress(
                 job_id, progress=94, message="Running PoseBusters validation...",
                 current_stage="PoseBusters"
             )
-            job_processor.add_posebusters_flags(str(final_path))
+            job_processor.add_posebusters_flags(str(final_path), str(receptor_path))
 
         if plif_sim and reference_path:
             await job_processor.update_progress(
