@@ -2527,61 +2527,81 @@ cmd.quit()
 
     async def add_plif_sim(self, sdf_path: str, receptor_path: str, reference_path: str) -> int:
         """
-        Annotates each pose in sdf_path with PLIF_Sim — ODDT InteractionFingerprint
-        Tanimoto similarity to the reference ligand. Runs via sbdd conda env.
-        Modifies sdf_path in-place. Returns number of poses successfully annotated.
+        Annotates each pose in sdf_path with PLIF_Sim — ProLIF InteractionFingerprint
+        Tanimoto similarity to the reference ligand.
+        Runs in-process. Modifies sdf_path in-place. Returns number of poses annotated.
         """
-        work_dir = Path(sdf_path).parent
-        script_path = work_dir / "_plif_sim.py"
-        out_json = work_dir / "_plif_sim.json"
-
-        script_path.write_text(
-            f"import sys, json\n"
-            f"import oddt\n"
-            f"from oddt.fingerprints import InteractionFingerprint, tanimoto\n"
-            f"from pathlib import Path\n"
-            f"\n"
-            f"protein = next(oddt.toolkit.readfile('pdb', {repr(receptor_path)}))\n"
-            f"protein.protein = True\n"
-            f"reference = next(oddt.toolkit.readfile('sdf', {repr(reference_path)}))\n"
-            f"poses = list(oddt.toolkit.readfile('sdf', {repr(sdf_path)}))\n"
-            f"\n"
-            f"ref_fp = InteractionFingerprint(reference, protein, strict=True)\n"
-            f"results = []\n"
-            f"for mol in poses:\n"
-            f"    fp = InteractionFingerprint(mol, protein, strict=True)\n"
-            f"    if fp is not None and len(fp) > 0:\n"
-            f"        results.append(float(tanimoto(ref_fp, fp)))\n"
-            f"    else:\n"
-            f"        results.append(None)\n"
-            f"\n"
-            f"Path({repr(str(out_json))}).write_text(json.dumps(results))\n"
-        )
-
+        import warnings
         try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, str(script_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-            if proc.returncode != 0 or not out_json.exists():
-                logger.error("add_plif_sim: subprocess failed: %s", stderr.decode()[:500])
-                return 0
-        except asyncio.TimeoutError:
-            logger.error("add_plif_sim: timed out")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                import MDAnalysis as mda
+            import prolif
+        except ImportError as e:
+            logger.error("add_plif_sim: prolif not installed: %s", e)
             return 0
 
-        similarities = json.loads(out_json.read_text())
+        # Load protein
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                u = mda.Universe(receptor_path)
+                protein = prolif.Molecule.from_mda(u.select_atoms("protein"))
+        except Exception as e:
+            logger.error("add_plif_sim: failed to load receptor: %s", e)
+            return 0
+
+        # Load reference ligand
+        ref_supp = Chem.SDMolSupplier(reference_path, removeHs=False, sanitize=False)
+        ref_rdmol = next((m for m in ref_supp if m is not None and m.GetNumAtoms() > 0), None)
+        if ref_rdmol is None:
+            logger.error("add_plif_sim: could not load reference ligand from %s", reference_path)
+            return 0
+
+        try:
+            ref_lig = prolif.Molecule.from_rdkit(Chem.AddHs(ref_rdmol, addCoords=True))
+            fp_ref = prolif.Fingerprint()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fp_ref.run_from_iterable([ref_lig], protein, progress=False)
+            ref_bv = fp_ref.to_bitvectors()[0]
+        except Exception as e:
+            logger.error("add_plif_sim: failed to compute reference PLIF: %s", e)
+            return 0
 
         with open(sdf_path, 'r') as f:
             content = f.read()
         blocks = [b for b in content.split('$$$$') if b.strip()]
 
+        # Build list of valid ProLIF ligands, tracking which block index each came from
+        pose_ligs = []
+        valid_indices = []
+        for i, block in enumerate(blocks):
+            try:
+                mol = Chem.MolFromMolBlock(block.strip(), removeHs=False, sanitize=False)
+                if mol is not None and mol.GetNumAtoms() > 0:
+                    pose_ligs.append(prolif.Molecule.from_rdkit(mol))
+                    valid_indices.append(i)
+            except Exception:
+                pass
+
+        # Compute all pose fingerprints in one batch
+        sims: Dict[int, float] = {}
+        if pose_ligs:
+            try:
+                fp_poses = prolif.Fingerprint()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    fp_poses.run_from_iterable(pose_ligs, protein, progress=False)
+                for idx, bv in zip(valid_indices, fp_poses.to_bitvectors()):
+                    sims[idx] = DataStructs.TanimotoSimilarity(ref_bv, bv)
+            except Exception as e:
+                logger.error("add_plif_sim: fingerprint batch failed: %s", e)
+
         annotated = 0
         new_blocks = []
         for i, block in enumerate(blocks):
-            sim = similarities[i] if i < len(similarities) else None
+            sim = sims.get(i)
             sim_str = f'{sim:.4f}' if sim is not None else 'N/A'
             if sim is not None:
                 annotated += 1
