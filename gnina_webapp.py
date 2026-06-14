@@ -2472,20 +2472,21 @@ cmd.quit()
         logger.info("add_ref_sim: annotated %d/%d poses in %s", annotated, len(blocks), sdf_path)
         return annotated
 
-    def add_posebusters_flags(self, sdf_path: str, receptor_path: str) -> int:
+    def add_posebusters_flags(self, sdf_path: str, receptor_path: str) -> Tuple[int, str]:
         """
         Annotates each pose in sdf_path with PB_Flags — the count of PoseBusters
         checks that failed (0 = all pass). Runs with config='dock' which covers
         internal geometry (bond lengths, angles, planarity, clashes within the
         ligand) AND intermolecular checks against the receptor (protein-ligand
         distance, volume overlap with protein/cofactors).
-        Modifies sdf_path in-place. Returns number of poses successfully evaluated.
+        Modifies sdf_path in-place.
+        Returns (number of poses evaluated, failure-summary string for the run log).
         """
         try:
             from posebusters import PoseBusters
         except ImportError:
             logger.error("add_posebusters_flags: posebusters is not installed")
-            return 0
+            return 0, ""
 
         with open(sdf_path, 'r') as f:
             content = f.read()
@@ -2496,7 +2497,7 @@ cmd.quit()
             df = pb.bust(sdf_path, mol_cond=receptor_path, full_report=True)
         except Exception as e:
             logger.error("add_posebusters_flags: PoseBusters failed: %s", e)
-            return 0
+            return 0, ""
 
         # Count failed checks per row (False = fail, NaN = not applicable → ignore)
         _INFRA_COLS = {'mol_cond_loaded', 'mol_true_loaded'}
@@ -2522,17 +2523,18 @@ cmd.quit()
             for b in new_blocks:
                 f.write(b.rstrip('\r\n ') + '\n\n$$$$\n')
 
-        # Log which checks fail most frequently to help diagnose systematic issues
+        # Build failure summary for run log and server log
+        pb_summary = ""
         if not df.empty:
             fail_totals = (df[bool_cols] == False).sum().sort_values(ascending=False)  # noqa: E712
             failing = fail_totals[fail_totals > 0]
             if not failing.empty:
-                logger.info("add_posebusters_flags: most common failures across all poses:\n%s",
-                            failing.to_string())
+                pb_summary = failing.to_string()
+                logger.warning("add_posebusters_flags: most common failures across all poses:\n%s", pb_summary)
 
-        logger.info("add_posebusters_flags: evaluated %d/%d poses in %s",
-                    annotated, len(blocks), sdf_path)
-        return annotated
+        logger.warning("add_posebusters_flags: evaluated %d/%d poses in %s",
+                       annotated, len(blocks), sdf_path)
+        return annotated, pb_summary
 
     async def add_plif_sim(self, sdf_path: str, receptor_path: str, reference_path: str) -> int:
         """
@@ -3267,13 +3269,41 @@ async def dock_molecules(
             if n_flex == 0:
                 flex_pdb_path = None
 
+        # Collect postprocessing stats for the run log
+        run_log: List[str] = []
+        run_log.append(f"GNINA Docking Run Log")
+        run_log.append(f"{'=' * 40}")
+        run_log.append(f"Session:       {session_name or job_id}")
+        run_log.append(f"Date:          {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        run_log.append("")
+        run_log.append("Parameters")
+        run_log.append("-" * 40)
+        run_log.append(f"Receptor:      {receptor.filename}")
+        if reference_path:
+            run_log.append(f"Reference:     {reference.filename if reference else 'n/a'}")
+        run_log.append(f"pH:            {ph}")
+        run_log.append(f"Poses:         {num_poses}")
+        run_log.append(f"Exhaustiveness:{exhaustiveness}")
+        run_log.append(f"CNN scoring:   {cnn_scoring}")
+        run_log.append(f"Sort by:       {sort_by}")
+        pp_flags = [f for f, en in [
+            ("MCS_RMSD", mcs_rmsd), ("Shape_Sim", shape_sim), ("Ref_Sim", ref_sim),
+            ("PLIF_Sim", plif_sim), ("PoseBusters", posebusters),
+        ] if en]
+        run_log.append(f"Postprocessing:{', '.join(pp_flags) if pp_flags else 'none'}")
+        run_log.append("")
+        run_log.append("Results")
+        run_log.append("-" * 40)
+        run_log.append(f"Output poses:  {num_poses_out}")
+
         # Optional MCS RMSD annotation (requires reference ligand)
         if mcs_rmsd and reference_path:
             await job_processor.update_progress(
                 job_id, progress=92, message="Calculating MCS RMSD...",
                 current_stage="MCS RMSD"
             )
-            job_processor.add_mcs_rmsd(str(final_path), str(reference_path))
+            n = job_processor.add_mcs_rmsd(str(final_path), str(reference_path))
+            run_log.append(f"MCS_RMSD:      {n}/{num_poses_out} annotated")
 
         # Optional shape similarity annotation (requires reference ligand)
         if shape_sim and reference_path:
@@ -3281,7 +3311,8 @@ async def dock_molecules(
                 job_id, progress=93, message="Calculating shape similarity...",
                 current_stage="Shape Sim"
             )
-            job_processor.add_shape_sim(str(final_path), str(reference_path))
+            n = job_processor.add_shape_sim(str(final_path), str(reference_path))
+            run_log.append(f"Shape_Sim:     {n}/{num_poses_out} annotated")
 
         # Optional 2D Morgan ECFP4 similarity to reference
         if ref_sim and reference_path:
@@ -3289,25 +3320,33 @@ async def dock_molecules(
                 job_id, progress=93, message="Calculating 2D similarity to reference...",
                 current_stage="Ref Sim"
             )
-            job_processor.add_ref_sim(str(final_path), str(reference_path))
+            n = job_processor.add_ref_sim(str(final_path), str(reference_path))
+            run_log.append(f"Ref_Sim:       {n}/{num_poses_out} annotated")
 
         if posebusters:
             await job_processor.update_progress(
                 job_id, progress=94, message="Running PoseBusters validation...",
                 current_stage="PoseBusters"
             )
-            job_processor.add_posebusters_flags(str(final_path), str(receptor_path))
+            n, pb_summary = job_processor.add_posebusters_flags(str(final_path), str(receptor_path))
+            run_log.append(f"PoseBusters:   {n}/{num_poses_out} evaluated (dock mode)")
+            if pb_summary:
+                run_log.append("")
+                run_log.append("PoseBusters failure counts across all poses:")
+                for line in pb_summary.splitlines():
+                    run_log.append(f"  {line}")
 
         if plif_sim and reference_path:
             await job_processor.update_progress(
                 job_id, progress=95, message="Calculating PLIF similarity...",
                 current_stage="PLIF Sim"
             )
-            await job_processor.add_plif_sim(
+            n = await job_processor.add_plif_sim(
                 sdf_path=str(final_path),
                 receptor_path=str(receptor_path),
                 reference_path=str(reference_path),
             )
+            run_log.append(f"PLIF_Sim:      {n}/{num_poses_out} annotated")
 
         # Optional PyMOL session
         pse_path = None
@@ -3331,6 +3370,16 @@ async def dock_molecules(
         total_time = (datetime.now() - start_time).total_seconds()
         active_jobs[job_id].timings['total'] = total_time
 
+        run_log.append("")
+        run_log.append("Timings")
+        run_log.append("-" * 40)
+        timings = active_jobs[job_id].timings
+        if 'preparation' in timings:
+            run_log.append(f"Preparation:   {timings['preparation']:.1f}s")
+        if 'docking' in timings:
+            run_log.append(f"Docking:       {timings['docking']:.1f}s")
+        run_log.append(f"Total:         {total_time:.1f}s")
+
         await job_processor.update_progress(
             job_id,
             status=JobStatus.COMPLETED,
@@ -3349,29 +3398,24 @@ async def dock_molecules(
 
         stem = session_name if session_name else f"docking_{job_id}"
 
-        # Bundle a zip when there are extra artifacts (PyMOL session and/or the
-        # flexible-docking side-chain PDB) to ship alongside the results SDF.
-        if pse_path or flex_pdb_path:
-            zip_path = work_dir / f"{stem}.zip"
-            with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.write(str(final_path), f"{stem}.sdf")
-                if pse_path:
-                    zf.write(pse_path, f"{stem}.pse")
-                if flex_pdb_path:
-                    zf.write(str(flex_pdb_path), f"{stem}_flex.pdb")
-            active_jobs[job_id].result_zip = str(zip_path)
-            resp = FileResponse(
-                path=str(zip_path),
-                filename=f"{stem}.zip",
-                media_type="application/zip",
-            )
-            resp.headers["X-Job-Id"] = job_id
-            return resp
+        # Write per-job run log and always bundle everything into a ZIP.
+        log_path = work_dir / f"{stem}_run.log"
+        log_path.write_text('\n'.join(run_log) + '\n')
+
+        zip_path = work_dir / f"{stem}.zip"
+        with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(str(final_path), f"{stem}.sdf")
+            zf.write(str(log_path), f"{stem}_run.log")
+            if pse_path:
+                zf.write(pse_path, f"{stem}.pse")
+            if flex_pdb_path:
+                zf.write(str(flex_pdb_path), f"{stem}_flex.pdb")
+        active_jobs[job_id].result_zip = str(zip_path)
 
         resp = FileResponse(
-            path=str(final_path),
-            filename=f"{stem}.sdf",
-            media_type="application/octet-stream",
+            path=str(zip_path),
+            filename=f"{stem}.zip",
+            media_type="application/zip",
         )
         resp.headers["X-Job-Id"] = job_id
         return resp
