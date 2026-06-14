@@ -2575,13 +2575,8 @@ cmd.quit()
 
         try:
             ref_lig = prolif.Molecule.from_rdkit(Chem.AddHs(ref_rdmol, addCoords=True))
-            fp_ref = prolif.Fingerprint()
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                fp_ref.run_from_iterable([ref_lig], protein, progress=False)
-            ref_bv = fp_ref.to_bitvectors()[0]
         except Exception as e:
-            logger.error("add_plif_sim: failed to compute reference PLIF: %s", e)
+            logger.error("add_plif_sim: failed to prepare reference ligand: %s", e)
             return 0
 
         with open(sdf_path, 'r') as f:
@@ -2600,15 +2595,19 @@ cmd.quit()
             except Exception:
                 pass
 
-        # Compute all pose fingerprints in one batch
+        # Run reference + all poses in a single Fingerprint instance so that
+        # all bitvectors share the same residue-interaction column set and are
+        # therefore the same length (required by TanimotoSimilarity).
         sims: Dict[int, float] = {}
         if pose_ligs:
             try:
-                fp_poses = prolif.Fingerprint()
+                fp = prolif.Fingerprint()
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    fp_poses.run_from_iterable(pose_ligs, protein, progress=False)
-                for idx, bv in zip(valid_indices, fp_poses.to_bitvectors()):
+                    fp.run_from_iterable([ref_lig] + pose_ligs, protein, progress=False)
+                all_bvs = fp.to_bitvectors()
+                ref_bv = all_bvs[0]
+                for idx, bv in zip(valid_indices, all_bvs[1:]):
                     sims[idx] = DataStructs.TanimotoSimilarity(ref_bv, bv)
             except Exception as e:
                 logger.error("add_plif_sim: fingerprint batch failed: %s", e)
