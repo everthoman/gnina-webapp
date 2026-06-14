@@ -2550,12 +2550,18 @@ cmd.quit()
             logger.error("add_plif_sim: prolif not installed: %s", e)
             return 0
 
-        # Load protein
+        # Load protein — retry with NoImplicit=False if RDKit valence check fails
+        # (some PDB files have atoms with unusual connectivity that RDKit rejects
+        # when NoImplicit=True enforces strict valence on explicit-H atoms).
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 u = mda.Universe(receptor_path)
-                protein = prolif.Molecule.from_mda(u.select_atoms("protein"))
+                prot_ag = u.select_atoms("protein")
+                try:
+                    protein = prolif.Molecule.from_mda(prot_ag)
+                except Exception:
+                    protein = prolif.Molecule.from_mda(prot_ag, NoImplicit=False)
         except Exception as e:
             logger.error("add_plif_sim: failed to load receptor: %s", e)
             return 0
