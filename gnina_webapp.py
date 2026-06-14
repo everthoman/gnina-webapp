@@ -391,8 +391,8 @@ EMBEDDED_HTML = '''<!DOCTYPE html>
             <h1>🧬 GNINA Molecular Docking</h1>
             <p>GPU-accelerated molecular docking with deep learning scoring</p>
             <div class="stats-bar">
-                <div class="stat"><span>⚡</span><span>36 CPU Cores</span></div>
-                <div class="stat"><span>🎮</span><span>2× RTX 5000 GPUs</span></div>
+                <div class="stat"><span>⚡</span><span>16 CPU Cores</span></div>
+                <div class="stat"><span>🎮</span><span>1× RTX PRO 500 GPU</span></div>
                 <div class="stat"><span>🔬</span><span>CNN Scoring</span></div>
             </div>
         </header>
@@ -476,12 +476,8 @@ EMBEDDED_HTML = '''<!DOCTYPE html>
                 </div>
                 <div class="gpu-status">
                     <div class="gpu-card active">
-                        <div class="gpu-name">GPU 0 • RTX 5000</div>
-                        <div class="gpu-info">16 CPU cores assigned</div>
-                    </div>
-                    <div class="gpu-card active">
-                        <div class="gpu-name">GPU 1 • RTX 5000</div>
-                        <div class="gpu-info">16 CPU cores assigned</div>
+                        <div class="gpu-name">GPU 0 • RTX PRO 500</div>
+                        <div class="gpu-info">12 CPU cores assigned</div>
                     </div>
                 </div>
             </div>
@@ -718,7 +714,7 @@ WORK_DIR = Path("/tmp/gnina_work")
 WORK_DIR.mkdir(exist_ok=True)
 
 # GNINA binary path - update as needed
-GNINA_PATH = os.environ.get('GNINA_PATH', '/opt/gnina/gnina.1.3.2')
+GNINA_PATH = os.environ.get('GNINA_PATH', '/opt/gnina/gnina')
 
 # PyMOL binary for headless session generation (pymol -cq script.py)
 PYMOL_PATH = os.environ.get('PYMOL_PATH', str(Path(sys.executable).parent / 'pymol'))
