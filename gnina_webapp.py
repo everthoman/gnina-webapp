@@ -2494,7 +2494,7 @@ cmd.quit()
 
         try:
             pb = PoseBusters(config='dock')
-            df = pb.bust(sdf_path, mol_cond=receptor_path, full_report=True)
+            df = pb.bust(sdf_path, mol_cond=receptor_path, full_report=False)
         except Exception as e:
             logger.error("add_posebusters_flags: PoseBusters failed: %s", e)
             return 0, ""
