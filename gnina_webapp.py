@@ -703,10 +703,21 @@ DOCK_GPU_IDS: List[int] = _detect_gpu_ids()
 N_GPU = len(DOCK_GPU_IDS)
 CPU_PER_GPU = max(1, WORKER_CPU // N_GPU)
 
+_NVIDIA_SMI = shutil.which(
+    'nvidia-smi',
+    path='/usr/lib/wsl/lib:/usr/bin:/usr/local/bin:' + os.environ.get('PATH', '')
+) or 'nvidia-smi'
+
+def _shorten_gpu_name(name: str) -> str:
+    name = re.sub(r'^NVIDIA\s+', '', name)
+    name = re.sub(r'\s+\w+ Generation\b.*', '', name)
+    name = re.sub(r'\s+(Laptop|Desktop)\s+GPU$', '', name, flags=re.IGNORECASE)
+    return name.strip()
+
 def _detect_gpu_names() -> dict:
     try:
         result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=index,name', '--format=csv,noheader'],
+            [_NVIDIA_SMI, '--query-gpu=index,name', '--format=csv,noheader'],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
@@ -714,7 +725,7 @@ def _detect_gpu_names() -> dict:
             for line in result.stdout.splitlines():
                 parts = line.split(',', 1)
                 if len(parts) == 2:
-                    names[int(parts[0].strip())] = parts[1].strip()
+                    names[int(parts[0].strip())] = _shorten_gpu_name(parts[1].strip())
             return names
     except Exception:
         pass
