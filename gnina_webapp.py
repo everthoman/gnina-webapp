@@ -703,6 +703,25 @@ DOCK_GPU_IDS: List[int] = _detect_gpu_ids()
 N_GPU = len(DOCK_GPU_IDS)
 CPU_PER_GPU = max(1, WORKER_CPU // N_GPU)
 
+def _detect_gpu_names() -> dict:
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,name', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            names = {}
+            for line in result.stdout.splitlines():
+                parts = line.split(',', 1)
+                if len(parts) == 2:
+                    names[int(parts[0].strip())] = parts[1].strip()
+            return names
+    except Exception:
+        pass
+    return {}
+
+GPU_NAMES: dict = _detect_gpu_names()
+
 # Flexible docking: hard cap on side chains made movable per ligand. Keeps
 # runtime and out_flex size bounded; gnina retains the closest residues.
 FLEX_MAX_RESIDUES = int(os.environ.get('FLEX_MAX_RESIDUES', '8'))
@@ -2712,6 +2731,13 @@ async def health_check():
     }
 
 
+@app.get("/system-info")
+async def system_info():
+    """Return hardware info for the UI stats bar."""
+    gpu_list = [{"id": gid, "name": GPU_NAMES.get(gid, f"GPU {gid}")} for gid in DOCK_GPU_IDS]
+    return {"cpus": N_CPU, "gpus": gpu_list}
+
+
 @app.post("/dock")
 async def dock_molecules(
     request: Request,
@@ -3576,8 +3602,8 @@ async def protprep_run(
 if __name__ == "__main__":
     uvicorn.run(
         "gnina_webapp:app",
-        host="172.21.65.193",
-        port=5004,
+        host=os.environ.get("BIND_HOST", "0.0.0.0"),
+        port=int(os.environ.get("BIND_PORT", "5004")),
         workers=1,  # Single worker for shared state
         reload=False,
         log_level="info"

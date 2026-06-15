@@ -692,8 +692,8 @@
             <h1><span class="emoji">🧬</span> GNINA Molecular Docking</h1>
             <p>GPU-accelerated molecular docking with deep learning scoring</p>
             <div class="stats-bar">
-                <div class="stat"><span class="stat-icon">⚡</span><span>16 CPU Cores</span></div>
-                <div class="stat"><span class="stat-icon">🎮</span><span>1× RTX PRO 500 GPU</span></div>
+                <div class="stat"><span class="stat-icon">⚡</span><span id="stat-cpu">16 CPU Cores</span></div>
+                <div class="stat"><span class="stat-icon">🎮</span><span id="stat-gpu">GPU</span></div>
                 <div class="stat"><span class="stat-icon">🔬</span><span>CNN Scoring</span></div>
             </div>
         </header>
@@ -1925,6 +1925,17 @@ CC(=O)Oc1ccccc1C(=O)O,aspirin"></textarea>
                 console.error('WebSocket error:', error);
             };
         }
+
+        // Populate hardware stats from server
+        fetch('/system-info').then(r => r.json()).then(info => {
+            document.getElementById('stat-cpu').textContent = info.cpus + ' CPU Cores';
+            if (info.gpus && info.gpus.length) {
+                const counts = {};
+                info.gpus.forEach(g => { counts[g.name] = (counts[g.name] || 0) + 1; });
+                const label = Object.entries(counts).map(([name, n]) => n + '× ' + name).join(', ');
+                document.getElementById('stat-gpu').textContent = label;
+            }
+        }).catch(() => {});
     </script>
 </body>
 </html>
