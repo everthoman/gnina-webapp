@@ -1073,7 +1073,7 @@ def _fix_split_sdf_blocks(content: str) -> str:
                 break
         merged.append(current)
         i += 1
-    return ('\n$$$$\n'.join(merged) + '\n$$$$\n') if merged else ''
+    return ('\n\n$$$$\n'.join(merged) + '\n\n$$$$\n') if merged else ''
 
 
 def parse_smiles_input(smiles_text: str) -> List[Tuple[str, str]]:
@@ -1720,7 +1720,7 @@ class DockingJobProcessor:
             lig_sdf = os.path.join(pymol_dir, f'{obj_name}.sdf')
             with open(lig_sdf, 'w') as f:
                 for b in blocks:
-                    f.write(b.rstrip('\r\n ') + '\n$$$$\n')
+                    f.write(b.rstrip('\r\n ') + '\n\n$$$$\n')
             ligand_entries.append((obj_name, lig_sdf))
 
             if flex_blocks:
