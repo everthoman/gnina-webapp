@@ -1671,7 +1671,7 @@ class DockingJobProcessor:
             """Make a valid PyMOL object name."""
             s = re.sub(r'[^\w]', '_', name)
             if s and s[0].isdigit():
-                s = 'lig_' + s
+                s = 'm' + s
             return s or 'ligand'
 
         pymol_dir = os.path.join(work_dir, 'pymol_files')
