@@ -2578,8 +2578,15 @@ cmd.quit()
         """
         Annotates each pose in sdf_path with PLIF_Sim — ProLIF InteractionFingerprint
         Tanimoto similarity to the reference ligand.
-        Runs in-process. Modifies sdf_path in-place. Returns number of poses annotated.
+        Runs in a thread pool so the event loop stays responsive. Modifies sdf_path
+        in-place. Returns number of poses annotated.
         """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._add_plif_sim_sync, sdf_path, receptor_path, reference_path
+        )
+
+    def _add_plif_sim_sync(self, sdf_path: str, receptor_path: str, reference_path: str) -> int:
         import warnings
         try:
             with warnings.catch_warnings():
@@ -2761,6 +2768,7 @@ async def dock_molecules(
     box_size: float = Form(16.0, ge=5, le=60, description="Cubic search box edge (Å) for residue/xyz mode"),
     ligand_file: Optional[UploadFile] = File(None, description="Ligands to dock (SDF)"),
     ligand_smiles: Optional[str] = Form(None, description="SMILES strings, one per line"),
+    skip_ligprep: bool = Form(False, description="Skip ligand preparation: use uploaded SDF as-is (no pH adjustment, no 3D generation)"),
     ph: float = Form(7.4, ge=0, le=14, description="pH for protonation"),
     num_poses: int = Form(9, ge=1, le=50, description="Number of poses per ligand"),
     exhaustiveness: int = Form(8, ge=1, le=64, description="Search exhaustiveness"),
@@ -2938,103 +2946,111 @@ async def dock_molecules(
             raw_sdf_path = work_dir / "ligands_uploaded_raw.sdf"
             raw_sdf_path.write_text(content_str)
 
-            # Parse: separate 3D-ready molecules from 2D molecules needing 3D generation
-            suppl = Chem.SDMolSupplier(str(raw_sdf_path), removeHs=False, sanitize=False)
-            mols_3d = []   # (mol, name) already have 3D coords
-            smiles_2d = []  # (smiles, name) need OpenBabel 3D generation
-
-            for i, mol in enumerate(suppl):
-                if mol is None:
-                    continue
-                mol_name = _extract_mol_name(mol, f'mol_{i}')
-                if _has_3d_coords(mol):
-                    mols_3d.append((mol, mol_name))
-                else:
-                    # Extract SMILES for OpenBabel 3D generation
-                    try:
-                        mol_san = Chem.RWMol(mol)
-                        Chem.SanitizeMol(mol_san, catchErrors=True)
-                        smiles = Chem.MolToSmiles(mol_san)
-                        if smiles:
-                            smiles_2d.append((smiles, mol_name))
-                            logger.info(f"2D molecule '{mol_name}': queued for 3D generation")
-                    except Exception as e:
-                        logger.warning(f"Could not extract SMILES for '{mol_name}': {e}")
-
-            logger.info(f"SDF upload: {len(mols_3d)} 3D molecules, {len(smiles_2d)} 2D molecules")
-
-            if not mols_3d and not smiles_2d:
-                raise HTTPException(400, "No valid molecules found in SDF file")
-
             prep_start = datetime.now()
 
-            # Write 3D molecules, then adjust protonation at target pH via OpenBabel.
-            # Strip all input SDF properties — GNINA echoes them back, and multi-line
-            # property values (e.g. Maestro s_m_subgroup_title) corrupt the output SDF.
-            # OpenBabel -p adjusts ionisation states (COO-, NH3+) without regenerating 3D.
-            three_d_path = work_dir / "ligands_3d.sdf"
-            three_d_raw_path = work_dir / "ligands_3d_raw.sdf"
-            if mols_3d:
-                with Chem.SDWriter(str(three_d_raw_path)) as writer_3d:
-                    for mol, name in mols_3d:
-                        for prop in list(mol.GetPropsAsDict().keys()):
-                            mol.ClearProp(prop)
-                        # Force the title to the resolved name (mol_<i> fallback for
-                        # nameless input molecules). Without this an untitled SDF
-                        # molecule keeps an empty title through docking, and the PyMOL
-                        # session can't build a separate object for it.
-                        mol.SetProp('_Name', name)
-                        writer_3d.write(mol)
-                # Adjust protonation at target pH (preserves heavy-atom 3D coordinates)
-                ph_proc = await asyncio.create_subprocess_exec(
-                    'obabel', str(three_d_raw_path), '-O', str(three_d_path), '-p', str(ph),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                try:
-                    _, ph_stderr = await asyncio.wait_for(ph_proc.communicate(), timeout=120)
-                    if ph_proc.returncode != 0 or not three_d_path.exists():
-                        logger.warning("OpenBabel pH adjustment for 3D ligands failed: %s — using raw input",
-                                       ph_stderr.decode(errors='replace'))
-                        three_d_path = three_d_raw_path
-                    else:
-                        logger.info("OpenBabel pH %.1f adjustment applied to %d 3D molecules", ph, len(mols_3d))
-                except asyncio.TimeoutError:
-                    logger.warning("obabel pH adjustment for 3D ligands timed out — using raw input")
-                    try:
-                        ph_proc.kill()
-                        await ph_proc.communicate()
-                    except Exception:
-                        pass
-                    three_d_path = three_d_raw_path
+            if skip_ligprep:
+                # Use SDF directly — caller guarantees correct 3D coords and protonation.
+                shutil.copy(str(raw_sdf_path), str(ligand_path))
+                logger.info("skip_ligprep=True: using uploaded SDF as-is")
+            else:
+                # Parse: separate 3D-ready molecules from 2D molecules needing 3D generation
+                suppl = Chem.SDMolSupplier(str(raw_sdf_path), removeHs=False, sanitize=False)
+                mols_3d = []   # (mol, name) already have 3D coords
+                smiles_2d = []  # (smiles, name) need OpenBabel 3D generation
 
-            # Generate 3D for 2D molecules via existing OpenBabel pipeline
-            two_d_prepared_path = work_dir / "ligands_from_2d.sdf"
-            if smiles_2d:
-                await job_processor.update_progress(
-                    job_id,
-                    status=JobStatus.PREPARING,
-                    message=f"Generating 3D coordinates for {len(smiles_2d)} 2D molecules...",
-                    current_stage="3D Generation"
-                )
-                success_2d, total_2d = await job_processor.prepare_ligands_from_smiles(
-                    job_id=job_id,
-                    smiles_with_ids=smiles_2d,
-                    output_path=str(two_d_prepared_path),
-                    ph=ph
-                )
-                logger.info(f"3D generation: {success_2d}/{total_2d} 2D molecules succeeded")
+                for i, mol in enumerate(suppl):
+                    if mol is None:
+                        continue
+                    mol_name = _extract_mol_name(mol, f'mol_{i}')
+                    if _has_3d_coords(mol):
+                        mols_3d.append((mol, mol_name))
+                    else:
+                        # Extract SMILES for OpenBabel 3D generation
+                        try:
+                            mol_san = Chem.RWMol(mol)
+                            Chem.SanitizeMol(mol_san, catchErrors=True)
+                            smiles = Chem.MolToSmiles(mol_san)
+                            if smiles:
+                                smiles_2d.append((smiles, mol_name))
+                                logger.info(f"2D molecule '{mol_name}': queued for 3D generation")
+                        except Exception as e:
+                            logger.warning(f"Could not extract SMILES for '{mol_name}': {e}")
+
+                logger.info(f"SDF upload: {len(mols_3d)} 3D molecules, {len(smiles_2d)} 2D molecules")
+
+                if not mols_3d and not smiles_2d:
+                    raise HTTPException(400, "No valid molecules found in SDF file")
+
+                # Write 3D molecules, then adjust protonation at target pH via OpenBabel.
+                # Strip all input SDF properties — GNINA echoes them back, and multi-line
+                # property values (e.g. Maestro s_m_subgroup_title) corrupt the output SDF.
+                # OpenBabel -p adjusts ionisation states (COO-, NH3+) without regenerating 3D.
+                three_d_path = work_dir / "ligands_3d.sdf"
+                three_d_raw_path = work_dir / "ligands_3d_raw.sdf"
+                if mols_3d:
+                    with Chem.SDWriter(str(three_d_raw_path)) as writer_3d:
+                        for mol, name in mols_3d:
+                            for prop in list(mol.GetPropsAsDict().keys()):
+                                mol.ClearProp(prop)
+                            # Strip explicit Hs so obabel -p can add the correct count at
+                            # the target pH — keeps heavy-atom 3D coords intact.
+                            mol = Chem.RemoveHs(mol, sanitize=False)
+                            # Force the title to the resolved name (mol_<i> fallback for
+                            # nameless input molecules). Without this an untitled SDF
+                            # molecule keeps an empty title through docking, and the PyMOL
+                            # session can't build a separate object for it.
+                            mol.SetProp('_Name', name)
+                            writer_3d.write(mol)
+                    # Adjust protonation at target pH (preserves heavy-atom 3D coordinates)
+                    ph_proc = await asyncio.create_subprocess_exec(
+                        'obabel', str(three_d_raw_path), '-O', str(three_d_path), '-p', str(ph),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    try:
+                        _, ph_stderr = await asyncio.wait_for(ph_proc.communicate(), timeout=120)
+                        if ph_proc.returncode != 0 or not three_d_path.exists():
+                            logger.warning("OpenBabel pH adjustment for 3D ligands failed: %s — using raw input",
+                                           ph_stderr.decode(errors='replace'))
+                            three_d_path = three_d_raw_path
+                        else:
+                            logger.info("OpenBabel pH %.1f adjustment applied to %d 3D molecules", ph, len(mols_3d))
+                    except asyncio.TimeoutError:
+                        logger.warning("obabel pH adjustment for 3D ligands timed out — using raw input")
+                        try:
+                            ph_proc.kill()
+                            await ph_proc.communicate()
+                        except Exception:
+                            pass
+                        three_d_path = three_d_raw_path
+
+                # Generate 3D for 2D molecules via existing OpenBabel pipeline
+                two_d_prepared_path = work_dir / "ligands_from_2d.sdf"
+                if smiles_2d:
+                    await job_processor.update_progress(
+                        job_id,
+                        status=JobStatus.PREPARING,
+                        message=f"Generating 3D coordinates for {len(smiles_2d)} 2D molecules...",
+                        current_stage="3D Generation"
+                    )
+                    success_2d, total_2d = await job_processor.prepare_ligands_from_smiles(
+                        job_id=job_id,
+                        smiles_with_ids=smiles_2d,
+                        output_path=str(two_d_prepared_path),
+                        ph=ph
+                    )
+                    logger.info(f"3D generation: {success_2d}/{total_2d} 2D molecules succeeded")
+
+                # Combine 3D + prepared-2D into final ligand file
+                with open(str(ligand_path), 'w') as out_f:
+                    if mols_3d and three_d_path.exists():
+                        out_f.write(three_d_path.read_text())
+                    if smiles_2d and two_d_prepared_path.exists():
+                        out_f.write(two_d_prepared_path.read_text())
 
             active_jobs[job_id].timings['preparation'] = (datetime.now() - prep_start).total_seconds()
 
-            # Combine 3D + prepared-2D into final ligand file
-            with open(str(ligand_path), 'w') as out_f:
-                if mols_3d and three_d_path.exists():
-                    out_f.write(three_d_path.read_text())
-                if smiles_2d and two_d_prepared_path.exists():
-                    out_f.write(two_d_prepared_path.read_text())
-
-            # Validate combined file
+            # Validate final ligand file
             verify_suppl = Chem.SDMolSupplier(str(ligand_path))
             mol_count = sum(1 for mol in verify_suppl if mol is not None)
 
@@ -3147,7 +3163,7 @@ async def dock_molecules(
         run_log.append(f"Receptor:      {receptor.filename}")
         if reference_path:
             run_log.append(f"Reference:     {reference.filename if reference else 'n/a'}")
-        run_log.append(f"pH:            {ph}")
+        run_log.append(f"pH:            {ph}{' (skipped — SDF used as-is)' if skip_ligprep else ''}")
         run_log.append(f"Poses:         {num_poses}")
         run_log.append(f"Exhaustiveness:{exhaustiveness}")
         run_log.append(f"CNN scoring:   {cnn_scoring}")
