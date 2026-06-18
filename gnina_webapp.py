@@ -3196,13 +3196,17 @@ async def dock_molecules(
         run_log.append("-" * 40)
         run_log.append(f"Output poses:  {num_poses_out}")
 
+        _executor_loop = asyncio.get_running_loop()
+
         # Optional MCS RMSD annotation (requires reference ligand)
         if mcs_rmsd and reference_path:
             await job_processor.update_progress(
                 job_id, progress=92, message="Calculating MCS RMSD...",
                 current_stage="MCS RMSD"
             )
-            n = job_processor.add_mcs_rmsd(str(final_path), str(reference_path))
+            n = await _executor_loop.run_in_executor(
+                None, job_processor.add_mcs_rmsd, str(final_path), str(reference_path)
+            )
             run_log.append(f"MCS_RMSD:      {n}/{num_poses_out} annotated")
 
         # Optional shape similarity annotation (requires reference ligand)
@@ -3211,7 +3215,9 @@ async def dock_molecules(
                 job_id, progress=93, message="Calculating shape similarity...",
                 current_stage="Shape Sim"
             )
-            n = job_processor.add_shape_sim(str(final_path), str(reference_path))
+            n = await _executor_loop.run_in_executor(
+                None, job_processor.add_shape_sim, str(final_path), str(reference_path)
+            )
             run_log.append(f"Shape_Sim:     {n}/{num_poses_out} annotated")
 
         # Optional 2D Morgan ECFP4 similarity to reference
@@ -3220,7 +3226,9 @@ async def dock_molecules(
                 job_id, progress=93, message="Calculating 2D similarity to reference...",
                 current_stage="Ref Sim"
             )
-            n = job_processor.add_ref_sim(str(final_path), str(reference_path))
+            n = await _executor_loop.run_in_executor(
+                None, job_processor.add_ref_sim, str(final_path), str(reference_path)
+            )
             run_log.append(f"Ref_Sim:       {n}/{num_poses_out} annotated")
 
         if posebusters:
@@ -3228,7 +3236,9 @@ async def dock_molecules(
                 job_id, progress=94, message="Running PoseBusters validation...",
                 current_stage="PoseBusters"
             )
-            n, pb_summary = job_processor.add_posebusters_flags(str(final_path), str(receptor_path))
+            n, pb_summary = await _executor_loop.run_in_executor(
+                None, job_processor.add_posebusters_flags, str(final_path), str(receptor_path)
+            )
             run_log.append(f"PoseBusters:   {n}/{num_poses_out} evaluated (dock mode)")
             if pb_summary:
                 run_log.append("")
