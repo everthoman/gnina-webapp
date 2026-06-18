@@ -3196,15 +3196,28 @@ async def dock_molecules(
 
         _executor_loop = asyncio.get_running_loop()
 
+        async def _run_pp(fn, *args, timeout_s=120, label="post-processing"):
+            """Run a synchronous post-processing function in the thread pool with a timeout."""
+            try:
+                return await asyncio.wait_for(
+                    _executor_loop.run_in_executor(None, fn, *args),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.error("%s timed out after %ds — skipping", label, timeout_s)
+                return None
+
         # Optional MCS RMSD annotation (requires reference ligand)
         if mcs_rmsd and reference_path:
             await job_processor.update_progress(
                 job_id, progress=92, message="Calculating MCS RMSD...",
                 current_stage="MCS RMSD"
             )
-            n = await _executor_loop.run_in_executor(
-                None, job_processor.add_mcs_rmsd, str(final_path), str(reference_path)
+            result = await _run_pp(
+                job_processor.add_mcs_rmsd, str(final_path), str(reference_path),
+                timeout_s=60, label="MCS RMSD",
             )
+            n = result if result is not None else 0
             run_log.append(f"MCS_RMSD:      {n}/{num_poses_out} annotated")
 
         # Optional shape similarity annotation (requires reference ligand)
@@ -3213,9 +3226,11 @@ async def dock_molecules(
                 job_id, progress=93, message="Calculating shape similarity...",
                 current_stage="Shape Sim"
             )
-            n = await _executor_loop.run_in_executor(
-                None, job_processor.add_shape_sim, str(final_path), str(reference_path)
+            result = await _run_pp(
+                job_processor.add_shape_sim, str(final_path), str(reference_path),
+                timeout_s=60, label="Shape Sim",
             )
+            n = result if result is not None else 0
             run_log.append(f"Shape_Sim:     {n}/{num_poses_out} annotated")
 
         # Optional 2D Morgan ECFP4 similarity to reference
@@ -3224,9 +3239,11 @@ async def dock_molecules(
                 job_id, progress=93, message="Calculating 2D similarity to reference...",
                 current_stage="Ref Sim"
             )
-            n = await _executor_loop.run_in_executor(
-                None, job_processor.add_ref_sim, str(final_path), str(reference_path)
+            result = await _run_pp(
+                job_processor.add_ref_sim, str(final_path), str(reference_path),
+                timeout_s=60, label="Ref Sim",
             )
+            n = result if result is not None else 0
             run_log.append(f"Ref_Sim:       {n}/{num_poses_out} annotated")
 
         if posebusters:
@@ -3234,26 +3251,32 @@ async def dock_molecules(
                 job_id, progress=94, message="Running PoseBusters validation...",
                 current_stage="PoseBusters"
             )
-            n, pb_summary = await _executor_loop.run_in_executor(
-                None, job_processor.add_posebusters_flags, str(final_path), str(receptor_path)
+            result = await _run_pp(
+                job_processor.add_posebusters_flags, str(final_path), str(receptor_path),
+                timeout_s=300, label="PoseBusters",
             )
-            run_log.append(f"PoseBusters:   {n}/{num_poses_out} evaluated (dock mode)")
-            if pb_summary:
-                run_log.append("")
-                run_log.append("PoseBusters failure counts across all poses:")
-                for line in pb_summary.splitlines():
-                    run_log.append(f"  {line}")
+            if result is not None:
+                n, pb_summary = result
+                run_log.append(f"PoseBusters:   {n}/{num_poses_out} evaluated (dock mode)")
+                if pb_summary:
+                    run_log.append("")
+                    run_log.append("PoseBusters failure counts across all poses:")
+                    for line in pb_summary.splitlines():
+                        run_log.append(f"  {line}")
+            else:
+                run_log.append(f"PoseBusters:   timed out — skipped")
 
         if plif_sim and reference_path:
             await job_processor.update_progress(
                 job_id, progress=95, message="Calculating PLIF similarity...",
                 current_stage="PLIF Sim"
             )
-            n = await job_processor.add_plif_sim(
-                sdf_path=str(final_path),
-                receptor_path=str(receptor_path),
-                reference_path=str(reference_path),
+            result = await _run_pp(
+                job_processor._add_plif_sim_sync,
+                str(final_path), str(receptor_path), str(reference_path),
+                timeout_s=300, label="PLIF Sim",
             )
+            n = result if result is not None else 0
             run_log.append(f"PLIF_Sim:      {n}/{num_poses_out} annotated")
 
         # Optional PyMOL session
