@@ -3082,7 +3082,10 @@ async def dock_molecules(
             covalent_optimize_lig=covalent_optimize,
         )
         active_jobs[job_id].timings['docking'] = (datetime.now() - dock_start).total_seconds()
-        
+
+        if active_jobs[job_id].cancelled:
+            raise HTTPException(499, "Job was cancelled")
+
         # Merge GNINA's split structure/property blocks before any further processing.
         # obabel discards zero-atom property blocks, so fix them first or scores are lost.
         docked_fixed_path = work_dir / "docked_fixed.sdf"
