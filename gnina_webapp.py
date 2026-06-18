@@ -2354,24 +2354,22 @@ cmd.quit()
                     bondCompare=rdFMCS.BondCompare.CompareOrder,
                     ringMatchesRingOnly=True,
                     completeRingsOnly=False,
-                    timeout=5,
+                    timeout=2,
                 )
 
                 if mcs_result.numAtoms < 3:
                     rmsd_str = 'N/A'
                 else:
                     mcs_mol = Chem.MolFromSmarts(mcs_result.smartsString)
-                    ref_matches = ref_mol.GetSubstructMatches(mcs_mol, uniquify=False)
-                    pose_matches = pose_mol.GetSubstructMatches(mcs_mol, uniquify=False)
+                    # Cap matches to avoid O(ref²×pose²) explosion on symmetric scaffolds.
+                    ref_matches = ref_mol.GetSubstructMatches(mcs_mol, uniquify=False, maxMatches=16)
+                    pose_matches = pose_mol.GetSubstructMatches(mcs_mol, uniquify=False, maxMatches=16)
 
                     if not ref_matches or not pose_matches:
                         rmsd_str = 'N/A'
                     else:
                         ref_conf = ref_mol.GetConformer()
                         pose_conf = pose_mol.GetConformer()
-                        # Try all mapping combinations; keep the minimum RMSD.
-                        # This handles symmetric substructures (e.g. para-rings)
-                        # where the first mapping found may not minimise RMSD.
                         best_rmsd = float('inf')
                         for ref_match in ref_matches:
                             ref_coords = np.array([list(ref_conf.GetAtomPosition(i)) for i in ref_match])
