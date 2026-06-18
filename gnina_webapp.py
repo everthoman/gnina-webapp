@@ -2949,9 +2949,24 @@ async def dock_molecules(
             prep_start = datetime.now()
 
             if skip_ligprep:
-                # Use SDF directly — caller guarantees correct 3D coords and protonation.
-                shutil.copy(str(raw_sdf_path), str(ligand_path))
-                logger.info("skip_ligprep=True: using uploaded SDF as-is")
+                # Filter to blocks that have real 3D coordinates and strip all SDF
+                # properties. This handles Schrodinger/Maestro SDFs that use split
+                # blocks (structure + properties as separate $$$$ entries) — gnina
+                # would try to dock each block independently without this step.
+                # Coordinates and protonation are preserved unchanged.
+                suppl_skip = Chem.SDMolSupplier(str(raw_sdf_path), removeHs=False, sanitize=False)
+                kept = 0
+                with Chem.SDWriter(str(ligand_path)) as _w:
+                    for _i, _mol in enumerate(suppl_skip):
+                        if _mol is None or not _has_3d_coords(_mol):
+                            continue
+                        _name = _extract_mol_name(_mol, f'mol_{_i}')
+                        for _p in list(_mol.GetPropsAsDict().keys()):
+                            _mol.ClearProp(_p)
+                        _mol.SetProp('_Name', _name)
+                        _w.write(_mol)
+                        kept += 1
+                logger.info("skip_ligprep=True: kept %d 3D molecules from uploaded SDF", kept)
             else:
                 # Parse: separate 3D-ready molecules from 2D molecules needing 3D generation
                 suppl = Chem.SDMolSupplier(str(raw_sdf_path), removeHs=False, sanitize=False)
@@ -3128,10 +3143,10 @@ async def dock_molecules(
         )
 
         final_path = work_dir / "docking_results.sdf"
-        num_poses_out = job_processor.sort_and_filter_results(
-            input_path=docked_path,
-            output_path=str(final_path),
-            sort_by=sort_by,
+        loop = asyncio.get_running_loop()
+        num_poses_out = await loop.run_in_executor(
+            None, job_processor.sort_and_filter_results,
+            docked_path, str(final_path), sort_by,
         )
 
         if num_poses_out == 0:
