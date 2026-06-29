@@ -863,8 +863,11 @@ def _extract_mol_name(mol, fallback: str) -> str:
       2. Common SDF data fields (see _NAME_FIELDS)
       3. fallback string (e.g. 'mol_42')
 
-    Spaces in the returned name are replaced with underscores so the name is
-    safe for use in SDF title lines, file names, and PyMOL object names.
+    Non-word characters (spaces, hyphens, dots, etc.) are replaced with
+    underscores so the name is safe for use in SDF title lines, file names,
+    and PyMOL object names.  PyMOL converts hyphens to underscores when it
+    creates object names from SDF titles, so normalising here keeps the SDF
+    title and the PyMOL object name identical.
     """
     name = mol.GetProp('_Name').strip() if mol.HasProp('_Name') else ''
     if not name:
@@ -875,8 +878,8 @@ def _extract_mol_name(mol, fallback: str) -> str:
                     break
     if not name:
         return fallback
-    # Replace spaces (and other whitespace) with underscores
-    return re.sub(r'\s+', '_', name)
+    # Replace all non-word characters (hyphens, spaces, dots …) with underscores
+    return re.sub(r'[^\w]', '_', name)
 
 
 def _has_3d_coords(mol) -> bool:
