@@ -466,9 +466,9 @@ EMBEDDED_HTML = '''<!DOCTYPE html>
                     <div class="form-group">
                         <label>Sort Results By</label>
                         <select name="sort_by">
-                            <option value="minimizedAffinity" selected>Vina Affinity (lower=better)</option>
+                            <option value="minimizedAffinity">Vina Affinity (lower=better)</option>
                             <option value="CNNaffinity">CNN Affinity (higher=better)</option>
-                            <option value="CNN_VS">CNN_VS Score (higher=better)</option>
+                            <option value="CNN_VS" selected>CNN_VS Score (higher=better)</option>
                         </select>
                     </div>
                 </div>
@@ -1652,7 +1652,7 @@ class DockingJobProcessor:
         center: Optional[Tuple[float, float, float]] = None,
         size: Optional[Tuple[float, float, float]] = None,
         session_name: str = '',
-        sort_by: str = 'minimizedAffinity',
+        sort_by: str = 'CNN_VS',
         flex_blocks: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """
@@ -2105,7 +2105,7 @@ cmd.quit()
         self,
         input_path: str,
         output_path: str,
-        sort_by: str = 'minimizedAffinity',
+        sort_by: str = 'CNN_VS',
         max_poses: Optional[int] = None,
     ) -> int:
         """
@@ -2783,7 +2783,7 @@ async def dock_molecules(
     covalent_atom: str = Form('SG', description="Atom name of the reacting receptor residue (e.g. SG for Cys)"),
     covalent_smarts: Optional[str] = Form(None, description="SMARTS matching the ligand reactive atom (e.g. [C,c]=O)"),
     covalent_optimize: bool = Form(True, description="UFF-optimize the covalent ligand+residue complex"),
-    sort_by: Literal['minimizedAffinity', 'CNNscore', 'CNNaffinity', 'CNN_VS'] = Form('minimizedAffinity'),
+    sort_by: Literal['minimizedAffinity', 'CNNscore', 'CNNaffinity', 'CNN_VS'] = Form('CNN_VS'),
     generate_pymol: bool = Form(False),
     mcs_rmsd: bool = Form(False),
     shape_sim: bool = Form(False),
