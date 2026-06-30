@@ -46,6 +46,9 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 # Suppress RDKit warnings
 RDLogger.DisableLog('rdApp.*')
 
+_OPENCONF_PYTHON = "/opt/webapps/openconf_env/bin/python3"
+_OPENCONF_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "openconf_embed.py")
+
 def _sanitize_mol(mol) -> None:
     """Sanitize an RDKit mol loaded with sanitize=False.
 
@@ -1208,6 +1211,158 @@ def strip_sdf_properties(sdf_block: str) -> str:
     return '\n'.join(result_lines)
 
 
+def _fix_obabel_protonation(smiles: str) -> str:
+    """Remove spurious protonation that obabel adds to sp2/imine nitrogens.
+
+    Obabel's -p flag incorrectly protonates C=N (imine, amidine-like) atoms
+    whose pKa is far below physiological pH.  Any [NH+] that carries a
+    double bond to a heavy atom is reverted to its neutral form.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return smiles
+    rw = Chem.RWMol(mol)
+    changed = False
+    for atom in rw.GetAtoms():
+        if atom.GetAtomicNum() != 7 or atom.GetFormalCharge() != 1:
+            continue
+        has_double = any(b.GetBondTypeAsDouble() >= 2.0 for b in atom.GetBonds())
+        if has_double:
+            atom.SetFormalCharge(0)
+            atom.SetNumExplicitHs(max(0, atom.GetNumExplicitHs() - 1))
+            changed = True
+    if not changed:
+        return smiles
+    try:
+        Chem.SanitizeMol(rw)
+        return Chem.MolToSmiles(rw)
+    except Exception:
+        return smiles
+
+
+def _deprotonate_tetrazoles(sdf_block: str, ph: float) -> str:
+    """Fix tetrazole protonation state in a 3D molblock.
+
+    Tetrazole pKa ~4.9 — always deprotonated at physiological pH.  Two bugs
+    can appear in 3D structures:
+      - obabel --gen3d puts -1 on the wrong ring N (the C=N one) while
+        leaving an explicit H on the NH nitrogen.
+      - openconf/RDKit on the neutral SMILES keeps the NH intact.
+
+    This function: resets all ring-N formal charges to 0, then removes the
+    NH hydrogen and assigns -1 to that nitrogen.
+    """
+    if ph <= 4.9:
+        return sdf_block
+
+    raw_block = sdf_block.split('$$$$')[0]
+    mol = Chem.MolFromMolBlock(raw_block, removeHs=False, sanitize=False)
+    if mol is None:
+        return sdf_block
+
+    try:
+        mol.UpdatePropertyCache(strict=False)
+        Chem.FastFindRings(mol)
+    except Exception:
+        return sdf_block
+
+    ring_info = mol.GetRingInfo()
+    h_indices = []    # explicit H atoms to remove (descending order)
+    n_to_charge = []  # N indices to receive -1
+    n_to_neutral = [] # N indices to reset to 0 (obabel's spurious charge)
+
+    for ring in ring_info.AtomRings():
+        if len(ring) != 5:
+            continue
+        atoms = [mol.GetAtomWithIdx(i) for i in ring]
+        if (sum(1 for a in atoms if a.GetAtomicNum() == 7) != 4 or
+                sum(1 for a in atoms if a.GetAtomicNum() == 6) != 1):
+            continue
+        # Found a tetrazole ring
+        for idx in ring:
+            atom = mol.GetAtomWithIdx(idx)
+            if atom.GetAtomicNum() != 7:
+                continue
+            if atom.GetFormalCharge() == -1:
+                n_to_neutral.append(idx)
+            for nbr in atom.GetNeighbors():
+                if nbr.GetAtomicNum() == 1:
+                    h_indices.append(nbr.GetIdx())
+                    n_to_charge.append(idx)
+
+    if not n_to_charge:
+        return sdf_block  # already deprotonated or not a tetrazole issue
+
+    rw = Chem.RWMol(mol)
+    for idx in n_to_neutral:
+        rw.GetAtomWithIdx(idx).SetFormalCharge(0)
+    for idx in n_to_charge:
+        rw.GetAtomWithIdx(idx).SetFormalCharge(-1)
+        rw.GetAtomWithIdx(idx).SetNoImplicit(True)
+    # Remove H atoms highest index first to preserve lower indices
+    for h_idx in sorted(set(h_indices), reverse=True):
+        rw.RemoveAtom(h_idx)
+
+    try:
+        Chem.SanitizeMol(rw)
+        return Chem.MolToMolBlock(rw) + '\n$$$$\n'
+    except Exception:
+        return sdf_block
+
+
+def _canonical_smiles(smiles: str) -> Optional[str]:
+    """Return a canonical, RDKit-parseable SMILES.
+
+    Some obabel protonation outputs (e.g. tetrazolate as Kekulé [N-]) fail
+    strict valence checks.  Parsing with sanitize=False, aromatizing, and
+    re-writing the SMILES usually produces a valid aromatic notation ([n-]).
+    Returns None if the SMILES cannot be parsed even loosely.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is not None:
+        return smiles
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        return None
+    try:
+        mol.UpdatePropertyCache(strict=False)
+        Chem.FastFindRings(mol)
+        Chem.SetAromaticity(mol)
+        canonical = Chem.MolToSmiles(mol)
+        # Verify the result round-trips cleanly
+        return canonical if Chem.MolFromSmiles(canonical) is not None else None
+    except Exception:
+        return None
+
+
+def _openconf_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Generate a 3D conformer via openconf (docking preset) in a Python 3.12 subprocess.
+
+    Returns (molblock+$$$$, None) on success or (None, error_message) on failure.
+    """
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            [_OPENCONF_PYTHON, _OPENCONF_WORKER, smiles],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "openconf failed").strip()
+            return None, err[:300]
+        sdf = result.stdout.strip()
+        if not sdf or 'M  END' not in sdf:
+            return None, "openconf returned empty or invalid SDF"
+        # openconf emits a 2-line molfile header (name + blank); V2000 requires 3 lines
+        # (name / program / comment) before the counts line — insert the missing blank.
+        lines = sdf.split('\n')
+        if len(lines) > 2 and lines[1] == '' and lines[2].strip()[:2].strip().isdigit():
+            lines.insert(2, '')
+            sdf = '\n'.join(lines)
+        return sdf + '\n$$$$\n', None
+    except Exception as e:
+        return None, f"openconf subprocess error: {e}"
+
+
 def _rdkit_embed_and_minimize(smiles: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Embed a SMILES into 3D with ETKDGv3 and minimize with MMFF94s
@@ -1288,11 +1443,25 @@ def prepare_single_ligand(args: Tuple[str, int, float, str]) -> Tuple[int, Optio
         protonated_smiles = re.split(r'[\s\t]', protonated_line, 1)[0] if protonated_line else ''
         if not protonated_smiles:
             return idx, None, f"Protonation produced empty SMILES from '{smiles}'", identifier
+        protonated_smiles = _fix_obabel_protonation(protonated_smiles)
 
-        # Step 2: 3D embed + minimize with RDKit (primary)
-        sdf_block, rdkit_err = _rdkit_embed_and_minimize(protonated_smiles)
+        # Step 2: 3D embed — openconf (primary), RDKit ETKDGv3 (secondary), OpenBabel (last resort)
+        # Canonicalize the protonated SMILES: obabel sometimes emits Kekulé forms
+        # that RDKit rejects (e.g. tetrazolate as [N-] with 3 bonds); re-aromatizing
+        # fixes these while preserving the correct protonation state.
+        canonical_smiles = _canonical_smiles(protonated_smiles) or protonated_smiles
+        oc_err = None
+        if Chem.MolFromSmiles(canonical_smiles) is not None:
+            sdf_block, oc_err = _openconf_embed(canonical_smiles)
+        else:
+            sdf_block = None
+            oc_err = "protonated SMILES not parseable by RDKit"
 
-        # Fallback: OpenBabel --gen3d best (no minimization) if RDKit failed
+        rdkit_err = None
+        if sdf_block is None:
+            sdf_block, rdkit_err = _rdkit_embed_and_minimize(canonical_smiles)
+
+        # Last resort: OpenBabel --gen3d best
         if sdf_block is None:
             sdf_file = os.path.join(tmp_dir, "output.sdf")
             cmd_3d = ['obabel', protonated_smi_file, '-O', sdf_file, '--gen3d', 'best']
@@ -1304,7 +1473,10 @@ def prepare_single_ligand(args: Tuple[str, int, float, str]) -> Tuple[int, Optio
                     sdf_block = candidate
             if sdf_block is None:
                 ob_err = (result2.stderr or 'unknown').strip()[:200]
-                return idx, None, f"3D generation failed for '{smiles}': RDKit={rdkit_err}; OpenBabel={ob_err}", identifier
+                return idx, None, f"3D generation failed for '{smiles}': openconf={oc_err}; RDKit={rdkit_err}; OpenBabel={ob_err}", identifier
+
+        # Fix tetrazole protonation state (handles obabel's spurious H/charge placement)
+        sdf_block = _deprotonate_tetrazoles(sdf_block, ph)
 
         # Normalize the title line to the identifier and strip properties
         lines = sdf_block.split('\n')
